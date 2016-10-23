@@ -46,7 +46,7 @@ config IOSCHED_BFQ
 	  The BFQ I/O scheduler distributes bandwidth among all
 	  processes according to their weights, regardless of the
 	  device parameters and with any workload. It also guarantees
-	  a low latency to interactive applications.
+	  a low latency to interactive and soft real-time applications.
 	  Details in Documentation/block/bfq-iosched.txt
 
 config BFQ_GROUP_IOSCHED
