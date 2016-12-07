@@ -10,39 +10,62 @@
  * Copyright (C) 2010 Paolo Valente <paolo.valente@unimore.it>
  *                    Arianna Avanzini <avanzini@google.com>
  *
- * Copyright (C) 2016 Paolo Valente <paolo.valente@linaro.org>
+ * Copyright (C) 2017 Paolo Valente <paolo.valente@linaro.org>
  *
  * Licensed under GPL-2.
  *
- * BFQ [1] is a proportional-share storage-I/O scheduling algorithm
- * based, as CFQ, on a slice-by-slice service scheme. Yet, differently
- * from CFQ, BFQ does not assign a time slice to each process doing
- * I/O. Instead, BFQ assigns a budget, measured in number of sectors:
- * once selected for service, a process is granted access to the
- * device until it exhausts its assigned budget. This change from the
- * time to the service domain enables BFQ to distribute the device
- * throughput among processes as desired, without any distortion due
- * to throughput fluctuations, or to device internal queueing.
+ * BFQ is a proportional-share I/O scheduler, with some extra
+ * low-latency capabilities. BFQ also supports full hierarchical
+ * scheduling through cgroups. Next paragraphs provide an introduction
+ * on BFQ inner workings. Details on BFQ benefits and usage can be
+ * found in Documentation/block/bfq-iosched.txt.
  *
- * More precisely, BFQ associates an I/O-request queue with each process
- * doing I/O, and uses an accurate internal scheduler, called B-WF2Q+,
- * to schedule queues according to process budgets. Each process/queue
- * is also assigned a user-configurable weight, and B-WF2Q+ guarantees
- * that each queue receives a fraction of the throughput proportional
- * to its weight. In addition, B-WF2Q+ enables BFQ to schedule queues
- * in such a way to boost the throughput and at the same time
- * guarantee a low latency to non-I/O bound processes (the latter
- * often belong to time-sensitive applications).
+ * BFQ is a proportional-share storage-I/O scheduling algorithm based
+ * on the slice-by-slice service scheme of CFQ. But BFQ assigns
+ * budgets, measured in number of sectors, to processes instead of
+ * time slices. The device is not granted to the in-service process
+ * for a given time slice, but until it has exhausted its assigned
+ * budget. This change from the time to the service domain enables BFQ
+ * to distribute the device throughput among processes as desired,
+ * without any distortion due to throughput fluctuations, or to device
+ * internal queueing. BFQ uses an ad hoc internal scheduler, called
+ * B-WF2Q+, to schedule processes according to their budgets. More
+ * precisely, BFQ schedules queues associated with processes. Each
+ * process/queue is assigned a user-configurable weight, and B-WF2Q+
+ * guarantees that each queue receives a fraction of the throughput
+ * proportional to its weight. Thanks to the accurate policy of
+ * B-WF2Q+, BFQ can afford to assign high budgets to I/O-bound
+ * processes issuing sequential requests (to boost the throughput),
+ * and yet guarantee a low latency to interactive and soft real-time
+ * applications.
  *
- * B-WF2Q+ is based on WF2Q+, which is described in [2], while the
- * augmented tree used here to implement B-WF2Q+ with O(log N)
- * complexity derives from the one introduced with EEVDF in [3].
+ * In particular, to provide these low-latency guarantees, BFQ
+ * explicitly privileges the I/O of two classes of time-sensitive
+ * applications: interactive and soft real-time. This feature enables
+ * BFQ to provide applications in these classes with a very low
+ * latency. Finally, BFQ also features additional heuristics for
+ * preserving both a low latency and a high throughput on NCQ-capable,
+ * rotational or flash-based devices, and to get the job done quickly
+ * for applications consisting in many I/O-bound processes.
+ *
+ * BFQ is described in [1], where also a reference to the initial, more
+ * theoretical paper on BFQ can be found. The interested reader can find
+ * in the latter paper full details on the main algorithm, as well as
+ * formulas of the guarantees and formal proofs of all the properties.
+ * With respect to the version of BFQ presented in these papers, this
+ * implementation adds a few more heuristics, such as the one that
+ * guarantees a low latency to soft real-time applications, and a
+ * hierarchical extension based on H-WF2Q+.
+ *
+ * B-WF2Q+ is based on WF2Q+, which is described in [2], together with
+ * H-WF2Q+, while the augmented tree used here to implement B-WF2Q+
+ * with O(log N) complexity derives from the one introduced with EEVDF
+ * in [3].
  *
  * [1] P. Valente, A. Avanzini, "Evolution of the BFQ Storage I/O
  *     Scheduler", Proceedings of the First Workshop on Mobile System
  *     Technologies (MST-2015), May 2015.
- *
- * http://algogroup.unimore.it/people/paolo/disk_sched/mst-2015.pdf
+ *     http://algogroup.unimore.it/people/paolo/disk_sched/mst-2015.pdf
  *
  * [2] Jon C.R. Bennett and H. Zhang, "Hierarchical Packet Fair Queueing
  *     Algorithms", IEEE/ACM Transactions on Networking, 5(5):675-689,
