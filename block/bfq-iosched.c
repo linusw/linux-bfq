@@ -2064,8 +2064,7 @@ static void bfqg_stats_update_dequeue(struct bfq_group *bfqg);
  * Called when the bfqq no longer has requests pending, remove it from
  * the service tree.
  */
-static void bfq_del_bfqq_busy(struct bfq_data *bfqd, struct bfq_queue *bfqq,
-			      int requeue)
+static void bfq_del_bfqq_busy(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 {
 	bfq_log_bfqq(bfqd, bfqq, "del from busy");
 
@@ -2075,7 +2074,7 @@ static void bfq_del_bfqq_busy(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 
 	bfqg_stats_update_dequeue(bfqq_group(bfqq));
 
-	bfq_deactivate_bfqq(bfqd, bfqq, requeue);
+	bfq_deactivate_bfqq(bfqd, bfqq, 1);
 }
 
 /*
@@ -3716,7 +3715,7 @@ static void bfq_remove_request(struct request_queue *q,
 		bfqq->next_rq = NULL;
 
 		if (bfq_bfqq_busy(bfqq) && bfqq != bfqd->in_service_queue) {
-			bfq_del_bfqq_busy(bfqd, bfqq, 1);
+			bfq_del_bfqq_busy(bfqd, bfqq);
 			/*
 			 * bfqq emptied. In normal operation, when
 			 * bfqq is empty, bfqq->entity.service and
@@ -4031,7 +4030,7 @@ static void __bfq_bfqq_expire(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 	__bfq_bfqd_reset_in_service(bfqd);
 
 	if (RB_EMPTY_ROOT(&bfqq->sort_list))
-		bfq_del_bfqq_busy(bfqd, bfqq, 1);
+		bfq_del_bfqq_busy(bfqd, bfqq);
 	else
 		bfq_activate_bfqq(bfqd, bfqq);
 }
