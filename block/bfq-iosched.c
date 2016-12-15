@@ -407,6 +407,7 @@ struct bfq_io_cq {
 	unsigned long saved_wr_coeff;
 	unsigned long saved_last_wr_start_finish;
 	unsigned long saved_wr_start_at_switch_to_srt;
+	unsigned int saved_wr_cur_max_time;
 };
 
 enum bfq_device_speed {
@@ -3914,6 +3915,7 @@ bfq_bfqq_resume_state(struct bfq_queue *bfqq, struct bfq_io_cq *bic)
 	bfqq->wr_coeff = bic->saved_wr_coeff;
 	bfqq->wr_start_at_switch_to_srt = bic->saved_wr_start_at_switch_to_srt;
 	bfqq->last_wr_start_finish = bic->saved_last_wr_start_finish;
+	bfqq->wr_cur_max_time = bic->saved_wr_cur_max_time;
 
 	if (bfqq->wr_coeff > 1 &&
 	    time_is_before_jiffies(bfqq->last_wr_start_finish +
@@ -4903,6 +4905,7 @@ static void bfq_bfqq_save_state(struct bfq_queue *bfqq)
 	bic->saved_wr_coeff = bfqq->wr_coeff;
 	bic->saved_wr_start_at_switch_to_srt = bfqq->wr_start_at_switch_to_srt;
 	bic->saved_last_wr_start_finish = bfqq->last_wr_start_finish;
+	bic->saved_wr_cur_max_time = bfqq->wr_cur_max_time;
 }
 
 static void bfq_get_bic_reference(struct bfq_queue *bfqq)
