@@ -77,6 +77,7 @@
 #include <linux/rbtree.h>
 #include <linux/ioprio.h>
 #include "blk.h"
+#undef CONFIG_BFQ_GROUP_IOSCHED /* cgroups support not yet functional */
 #include "bfq.h"
 
 /* Expiration time of sync (0) and async (1) requests, in ns. */
@@ -382,7 +383,7 @@ static bool bfq_differentiated_weights(struct bfq_data *bfqd)
 	return (!RB_EMPTY_ROOT(&bfqd->queue_weights_tree) &&
 		(bfqd->queue_weights_tree.rb_node->rb_left ||
 		 bfqd->queue_weights_tree.rb_node->rb_right)
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	       ) ||
 	       (!RB_EMPTY_ROOT(&bfqd->group_weights_tree) &&
 		(bfqd->group_weights_tree.rb_node->rb_left ||
@@ -1629,7 +1630,7 @@ static void bfq_merged_request(struct request_queue *q, struct request *req,
 	}
 }
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 static void bfq_bio_merged(struct request_queue *q, struct request *req,
 			   struct bio *bio)
 {
@@ -3801,7 +3802,7 @@ static int bfq_dispatch_requests(struct request_queue *q, int force)
  */
 static void bfq_put_queue(struct bfq_queue *bfqq)
 {
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	struct bfq_group *bfqg = bfqq_group(bfqq);
 #endif
 
@@ -3831,7 +3832,7 @@ static void bfq_put_queue(struct bfq_queue *bfqq)
 	bfq_log_bfqq(bfqq->bfqd, bfqq, "put_queue: %p freed", bfqq);
 
 	kmem_cache_free(bfq_pool, bfqq);
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	bfqg_put(bfqg);
 #endif
 }
@@ -4749,7 +4750,7 @@ static void bfq_exit_queue(struct elevator_queue *e)
 
 	BUG_ON(hrtimer_active(&bfqd->idle_slice_timer));
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	blkcg_deactivate_policy(q, &blkcg_policy_bfq);
 #else
 	bfq_put_async_queues(bfqd, bfqd->root_group);
@@ -4764,7 +4765,7 @@ static void bfq_init_root_group(struct bfq_group *root_group,
 {
 	int i;
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	root_group->entity.parent = NULL;
 	root_group->my_entity = NULL;
 	root_group->bfqd = bfqd;
@@ -5179,7 +5180,7 @@ static struct elevator_type iosched_bfq = {
 		.elevator_merge_fn =		bfq_merge,
 		.elevator_merged_fn =		bfq_merged_request,
 		.elevator_merge_req_fn =	bfq_merged_requests,
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 		.elevator_bio_merged_fn =	bfq_bio_merged,
 #endif
 		.elevator_allow_bio_merge_fn =	bfq_allow_bio_merge,
@@ -5206,7 +5207,7 @@ static struct elevator_type iosched_bfq = {
 	.elevator_owner =	THIS_MODULE,
 };
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 static struct blkcg_policy blkcg_policy_bfq = {
 	.dfl_cftypes		= bfq_blkg_files,
 	.legacy_cftypes		= bfq_blkcg_legacy_files,
@@ -5229,7 +5230,7 @@ static int __init bfq_init(void)
 	int ret;
 	char msg[60] = "BFQ I/O-scheduler: v8r8";
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	ret = blkcg_policy_register(&blkcg_policy_bfq);
 	if (ret)
 		return ret;
@@ -5276,7 +5277,7 @@ static int __init bfq_init(void)
 	if (ret)
 		goto err_pol_unreg;
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	strcat(msg, " (with cgroups support)");
 #endif
 	pr_info("%s", msg);
@@ -5284,7 +5285,7 @@ static int __init bfq_init(void)
 	return 0;
 
 err_pol_unreg:
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	blkcg_policy_unregister(&blkcg_policy_bfq);
 #endif
 	return ret;
@@ -5293,7 +5294,7 @@ err_pol_unreg:
 static void __exit bfq_exit(void)
 {
 	elv_unregister(&iosched_bfq);
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
+#ifdef BFQ_GROUP_IOSCHED_ENABLED
 	blkcg_policy_unregister(&blkcg_policy_bfq);
 #endif
 	bfq_slab_kill();
