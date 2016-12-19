@@ -199,15 +199,6 @@ static void bfq_schedule_dispatch(struct bfq_data *bfqd);
 #define bfq_sample_valid(samples)	((samples) > 80)
 
 /*
- * We regard a request as SYNC, if either it's a read or has the SYNC bit
- * set (in which case it could also be a direct WRITE).
- */
-static int bfq_bio_sync(struct bio *bio)
-{
-	return bio_data_dir(bio) == READ || (bio->bi_opf & REQ_SYNC);
-}
-
-/*
  * Scheduler run of queue, if there are requests pending and no one in the
  * driver that will restart queueing.
  */
@@ -1465,7 +1456,7 @@ static struct request *bfq_find_rq_fmerge(struct bfq_data *bfqd,
 	if (!bic)
 		return NULL;
 
-	bfqq = bic_to_bfqq(bic, bfq_bio_sync(bio));
+	bfqq = bic_to_bfqq(bic, op_is_sync(bio->bi_opf));
 	if (bfqq)
 		return elv_rb_find(&bfqq->sort_list, bio_end_sector(bio));
 
@@ -2075,13 +2066,14 @@ static int bfq_allow_bio_merge(struct request_queue *q, struct request *rq,
 			       struct bio *bio)
 {
 	struct bfq_data *bfqd = q->elevator->elevator_data;
+	bool is_sync = op_is_sync(bio->bi_opf);
 	struct bfq_io_cq *bic;
 	struct bfq_queue *bfqq, *new_bfqq;
 
 	/*
 	 * Disallow merge of a sync bio into an async request.
 	 */
-	if (bfq_bio_sync(bio) && !rq_is_sync(rq))
+	if (is_sync && !rq_is_sync(rq))
 		return false;
 
 	/*
@@ -2093,7 +2085,7 @@ static int bfq_allow_bio_merge(struct request_queue *q, struct request *rq,
 	if (!bic)
 		return false;
 
-	bfqq = bic_to_bfqq(bic, bfq_bio_sync(bio));
+	bfqq = bic_to_bfqq(bic, is_sync);
 	/*
 	 * We take advantage of this function to perform an early merge
 	 * of the queues of possible cooperating processes.
