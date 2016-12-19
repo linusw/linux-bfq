@@ -2411,38 +2411,36 @@ static void bfqg_put(struct bfq_group *bfqg)
 
 static void bfqg_stats_update_io_add(struct bfq_group *bfqg,
 				     struct bfq_queue *bfqq,
-				     int op, int op_flags)
+				     unsigned int op)
 {
-	blkg_rwstat_add(&bfqg->stats.queued, op, op_flags, 1);
+	blkg_rwstat_add(&bfqg->stats.queued, op, 1);
 	bfqg_stats_end_empty_time(&bfqg->stats);
 	if (!(bfqq == ((struct bfq_data *)bfqg->bfqd)->in_service_queue))
 		bfqg_stats_set_start_group_wait_time(bfqg, bfqq_group(bfqq));
 }
 
-static void bfqg_stats_update_io_remove(struct bfq_group *bfqg, int op,
-					int op_flags)
+static void bfqg_stats_update_io_remove(struct bfq_group *bfqg, unsigned int op)
 {
-	blkg_rwstat_add(&bfqg->stats.queued, op, op_flags, -1);
+	blkg_rwstat_add(&bfqg->stats.queued, op, -1);
 }
 
-static void bfqg_stats_update_io_merged(struct bfq_group *bfqg, int op,
-					int op_flags)
+static void bfqg_stats_update_io_merged(struct bfq_group *bfqg, unsigned int op)
 {
-	blkg_rwstat_add(&bfqg->stats.merged, op, op_flags, 1);
+	blkg_rwstat_add(&bfqg->stats.merged, op, 1);
 }
 
 static void bfqg_stats_update_completion(struct bfq_group *bfqg,
-			uint64_t start_time, uint64_t io_start_time, int op,
-			int op_flags)
+			uint64_t start_time, uint64_t io_start_time,
+			unsigned int op)
 {
 	struct bfqg_stats *stats = &bfqg->stats;
 	unsigned long long now = sched_clock();
 
 	if (time_after64(now, io_start_time))
-		blkg_rwstat_add(&stats->service_time, op, op_flags,
+		blkg_rwstat_add(&stats->service_time, op,
 				now - io_start_time);
 	if (time_after64(io_start_time, start_time))
-		blkg_rwstat_add(&stats->wait_time, op, op_flags,
+		blkg_rwstat_add(&stats->wait_time, op,
 				io_start_time - start_time);
 }
 
@@ -3257,14 +3255,14 @@ static struct cftype bfq_blkg_files[] = {
 #else	/* CONFIG_BFQ_GROUP_IOSCHED */
 
 static inline void bfqg_stats_update_io_add(struct bfq_group *bfqg,
-			struct bfq_queue *bfqq, int op, int op_flags) { }
+			struct bfq_queue *bfqq, unsigned int op) { }
 static inline void
-bfqg_stats_update_io_remove(struct bfq_group *bfqg, int op, int op_flags) { }
+bfqg_stats_update_io_remove(struct bfq_group *bfqg, unsigned int op) { }
 static inline void
-bfqg_stats_update_io_merged(struct bfq_group *bfqg, int op, int op_flags) { }
+bfqg_stats_update_io_merged(struct bfq_group *bfqg, unsigned int op) { }
 static inline void bfqg_stats_update_completion(struct bfq_group *bfqg,
-			uint64_t start_time, uint64_t io_start_time, int op,
-			int op_flags) { }
+			uint64_t start_time, uint64_t io_start_time,
+			unsigned int op) { }
 static inline void
 bfqg_stats_set_start_group_wait_time(struct bfq_group *bfqg,
 				     struct bfq_group *curr_bfqg) { }
@@ -3693,8 +3691,7 @@ static void bfq_bfqq_handle_idle_busy_switch(struct bfq_data *bfqd,
 			RQ_BIC(rq)->ttime.last_end_request +
 			bfqd->bfq_slice_idle * 3ULL;
 
-	bfqg_stats_update_io_add(bfqq_group(RQ_BFQQ(rq)), bfqq,
-				 req_op(rq), rq->cmd_flags);
+	bfqg_stats_update_io_add(bfqq_group(RQ_BFQQ(rq)), bfqq, rq->cmd_flags);
 
 	/*
 	 * Update budget and check whether bfqq may want to preempt
@@ -3834,8 +3831,7 @@ static void bfq_remove_request(struct request *rq)
 	if (rq->cmd_flags & REQ_META)
 		bfqq->meta_pending--;
 
-	bfqg_stats_update_io_remove(bfqq_group(bfqq), req_op(rq),
-				    rq->cmd_flags);
+	bfqg_stats_update_io_remove(bfqq_group(bfqq), rq->cmd_flags);
 }
 
 static enum elv_merge bfq_merge(struct request_queue *q, struct request **req,
@@ -3886,8 +3882,7 @@ static void bfq_merged_request(struct request_queue *q, struct request *req,
 static void bfq_bio_merged(struct request_queue *q, struct request *req,
 			   struct bio *bio)
 {
-	bfqg_stats_update_io_merged(bfqq_group(RQ_BFQQ(req)), bio_op(bio),
-				    bio->bi_opf);
+	bfqg_stats_update_io_merged(bfqq_group(RQ_BFQQ(req)), bio->bi_opf);
 }
 #endif
 
@@ -3917,8 +3912,7 @@ static void bfq_merged_requests(struct request_queue *q, struct request *rq,
 		bfqq->next_rq = rq;
 
 	bfq_remove_request(next);
-	bfqg_stats_update_io_merged(bfqq_group(bfqq), req_op(next),
-				    next->cmd_flags);
+	bfqg_stats_update_io_merged(bfqq_group(bfqq), next->cmd_flags);
 }
 
 static int bfq_allow_bio_merge(struct request_queue *q, struct request *rq,
@@ -5170,7 +5164,7 @@ static void bfq_completed_request(struct request_queue *q, struct request *rq)
 	bfqq->dispatched--;
 	bfqg_stats_update_completion(bfqq_group(bfqq),
 				     rq_start_time_ns(rq),
-				     rq_io_start_time_ns(rq), req_op(rq),
+				     rq_io_start_time_ns(rq),
 				     rq->cmd_flags);
 
 	RQ_BIC(rq)->ttime.last_end_request = ktime_get_ns();
