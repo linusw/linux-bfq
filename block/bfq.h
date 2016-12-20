@@ -234,8 +234,8 @@ struct bfq_queue {
 	struct request *next_rq;
 	/* number of sync and async requests queued */
 	int queued[2];
-	/* number of sync and async requests currently allocated */
-	int allocated[2];
+	/* number of requests currently allocated */
+	int allocated;
 	/* number of pending metadata requests */
 	int meta_pending;
 	/* fifo list of requests in sort_list */
@@ -320,6 +320,8 @@ struct bfq_queue {
 	unsigned long wr_start_at_switch_to_srt;
 
 	unsigned long split_time; /* time of last split */
+
+	spinlock_t lock;
 };
 
 /**
@@ -335,6 +337,9 @@ struct bfq_io_cq {
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 	uint64_t blkcg_serial_nr; /* the current blkcg serial */
 #endif
+
+	/* delayed work to exec the body of the the exit_icq handler */
+	struct work_struct exit_icq_work;
 
 	/*
 	 * Snapshot of the idle window before merging; taken to
@@ -377,11 +382,13 @@ enum bfq_device_speed {
 /**
  * struct bfq_data - per-device data structure.
  *
- * All the fields are protected by the @queue lock.
+ * All the fields are protected by @lock.
  */
 struct bfq_data {
-	/* request queue for the device */
+	/* device request queue */
 	struct request_queue *queue;
+	/* dispatch queue */
+	struct list_head dispatch;
 
 	/* root bfq_group for the device */
 	struct bfq_group *root_group;
@@ -435,8 +442,6 @@ struct bfq_data {
 	 * the queue in service.
 	 */
 	struct hrtimer idle_slice_timer;
-	/* delayed work to restart dispatching on the request queue */
-	struct work_struct unplug_work;
 
 	/* bfq_queue in service */
 	struct bfq_queue *in_service_queue;
@@ -589,6 +594,8 @@ struct bfq_data {
 
 	/* fallback dummy bfqq for extreme OOM conditions */
 	struct bfq_queue oom_bfqq;
+
+	spinlock_t lock;
 };
 
 enum bfqq_state_flags {
@@ -599,7 +606,6 @@ enum bfqq_state_flags {
 					     * waiting for a request
 					     * without idling the device
 					     */
-	BFQ_BFQQ_FLAG_must_alloc,	/* must be allowed rq alloc */
 	BFQ_BFQQ_FLAG_fifo_expire,	/* FIFO checked in this slice */
 	BFQ_BFQQ_FLAG_idle_window,	/* slice idling enabled */
 	BFQ_BFQQ_FLAG_sync,		/* synchronous queue */
@@ -638,7 +644,6 @@ BFQ_BFQQ_FNS(just_created);
 BFQ_BFQQ_FNS(busy);
 BFQ_BFQQ_FNS(wait_request);
 BFQ_BFQQ_FNS(non_blocking_wait_rq);
-BFQ_BFQQ_FNS(must_alloc);
 BFQ_BFQQ_FNS(fifo_expire);
 BFQ_BFQQ_FNS(idle_window);
 BFQ_BFQQ_FNS(sync);
@@ -669,7 +674,6 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 #define bfq_log_bfqq(bfqd, bfqq, fmt, args...)	do {			\
 	char __pbuf[128];						\
 									\
-	assert_spin_locked((bfqd)->queue->queue_lock);			\
 	blkg_path(bfqg_to_blkg(bfqq_group(bfqq)), __pbuf, sizeof(__pbuf)); \
 	pr_crit("%s bfq%d%c %s " fmt "\n", 				\
 		checked_dev_name((bfqd)->queue->backing_dev_info->dev),	\
@@ -711,7 +715,6 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 #define bfq_log_bfqq(bfqd, bfqq, fmt, args...)	do {			\
 	char __pbuf[128];						\
 									\
-	assert_spin_locked((bfqd)->queue->queue_lock);			\
 	blkg_path(bfqg_to_blkg(bfqq_group(bfqq)), __pbuf, sizeof(__pbuf)); \
 	blk_add_trace_msg((bfqd)->queue, "bfq%d%c %s " fmt, \
 			  (bfqq)->pid,			  \
@@ -938,7 +941,6 @@ static struct bfq_group *bfq_bfqq_to_bfqg(struct bfq_queue *bfqq)
 
 static void bfq_check_ioprio_change(struct bfq_io_cq *bic, struct bio *bio);
 static void bfq_put_queue(struct bfq_queue *bfqq);
-static void bfq_dispatch_insert(struct request_queue *q, struct request *rq);
 static struct bfq_queue *bfq_get_queue(struct bfq_data *bfqd,
 				       struct bio *bio, bool is_sync,
 				       struct bfq_io_cq *bic);
