@@ -815,58 +815,16 @@ static int bfq_gt(u64 a, u64 b)
 	return (s64)(a - b) > 0;
 }
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
-/* both next loops stop at one of the child entities of the root group */
-#define for_each_entity(entity)	\
-	for (; entity ; entity = entity->parent)
-
-/*
- * For each iteration, compute parent in advance, so as to be safe if
- * entity is deallocated during the iteration. Such a deallocation may
- * happen as a consequence of a bfq_put_queue that frees the bfq_queue
- * containing entity.
- */
-#define for_each_entity_safe(entity, parent) \
-	for (; entity && ({ parent = entity->parent; 1; }); entity = parent)
-
-
-static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd);
-
-/*
- * Returns true if this budget changes may let next_in_service->parent
- * become the next_in_service entity for its parent entity.
- */
-static bool bfq_update_parent_budget(struct bfq_entity *next_in_service)
-{
-	struct bfq_entity *bfqg_entity;
-	struct bfq_group *bfqg;
-	struct bfq_sched_data *group_sd;
-	bool ret = false;
-
-	group_sd = next_in_service->sched_data;
-
-	bfqg = container_of(group_sd, struct bfq_group, sched_data);
-	/*
-	 * bfq_group's my_entity field is not NULL only if the group
-	 * is not the root group. We must not touch the root entity
-	 * as it must never become an in-service entity.
-	 */
-	bfqg_entity = bfqg->my_entity;
-	if (bfqg_entity) {
-		if (bfqg_entity->budget > next_in_service->budget)
-			ret = true;
-		bfqg_entity->budget = next_in_service->budget;
-	}
-
-	return ret;
-}
-
 static struct bfq_entity *bfq_root_active_entity(struct rb_root *tree)
 {
 	struct rb_node *node = tree->rb_node;
 
 	return rb_entry(node, struct bfq_entity, rb_node);
 }
+
+static struct bfq_entity *bfq_lookup_next_entity(struct bfq_sched_data *sd);
+
+static bool bfq_update_parent_budget(struct bfq_entity *next_in_service);
 
 /**
  * bfq_update_next_in_service - update sd->next_in_service
@@ -965,6 +923,67 @@ static bool bfq_update_next_in_service(struct bfq_sched_data *sd,
 	return parent_sched_may_change;
 }
 
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+/* both next loops stop at one of the child entities of the root group */
+#define for_each_entity(entity)	\
+	for (; entity ; entity = entity->parent)
+
+/*
+ * For each iteration, compute parent in advance, so as to be safe if
+ * entity is deallocated during the iteration. Such a deallocation may
+ * happen as a consequence of a bfq_put_queue that frees the bfq_queue
+ * containing entity.
+ */
+#define for_each_entity_safe(entity, parent) \
+	for (; entity && ({ parent = entity->parent; 1; }); entity = parent)
+
+/*
+ * Returns true if this budget changes may let next_in_service->parent
+ * become the next_in_service entity for its parent entity.
+ */
+static bool bfq_update_parent_budget(struct bfq_entity *next_in_service)
+{
+	struct bfq_entity *bfqg_entity;
+	struct bfq_group *bfqg;
+	struct bfq_sched_data *group_sd;
+	bool ret = false;
+
+	group_sd = next_in_service->sched_data;
+
+	bfqg = container_of(group_sd, struct bfq_group, sched_data);
+	/*
+	 * bfq_group's my_entity field is not NULL only if the group
+	 * is not the root group. We must not touch the root entity
+	 * as it must never become an in-service entity.
+	 */
+	bfqg_entity = bfqg->my_entity;
+	if (bfqg_entity) {
+		if (bfqg_entity->budget > next_in_service->budget)
+			ret = true;
+		bfqg_entity->budget = next_in_service->budget;
+	}
+
+	return ret;
+}
+
+/*
+ * This function tells whether entity stops being a candidate for next
+ * service, according to the following logic.
+ *
+ * This function is invoked for an entity that is about to be set in
+ * service. If such an entity is a queue, then the entity is no longer
+ * a candidate for next service (i.e, a candidate entity to serve
+ * after the in-service entity is expired). The function then returns
+ * true.
+ */
+static bool bfq_no_longer_next_in_service(struct bfq_entity *entity)
+{
+	if (bfq_entity_to_bfqq(entity))
+		return true;
+
+	return false;
+}
+
 #else /* CONFIG_BFQ_GROUP_IOSCHED */
 /*
  * Next two macros are fake loops when cgroups support is not
@@ -977,13 +996,14 @@ static bool bfq_update_next_in_service(struct bfq_sched_data *sd,
 #define for_each_entity_safe(entity, parent) \
 	for (parent = NULL; entity ; entity = parent)
 
-static int bfq_update_next_in_service(struct bfq_sched_data *sd)
+static bool bfq_update_parent_budget(struct bfq_entity *next_in_service)
 {
-	return 0;
+	return false;
 }
 
-static void bfq_update_parent_budget(struct bfq_entity *next_in_service)
+static bool bfq_no_longer_next_in_service(struct bfq_entity *entity)
 {
+	return true;
 }
 
 #endif /* CONFIG_BFQ_GROUP_IOSCHED */
@@ -1886,7 +1906,8 @@ static void bfq_deactivate_entity(struct bfq_entity *entity,
 		if (!bfq_update_next_in_service(sd, entity) &&
 		    !expiration)
 			/*
-			 * next_in_service unchanged, and no
+			 * next_in_service unchanged or not causing
+			 * any change in entity->parent->sd, and no
 			 * requeueing needed for expiration: stop
 			 * here.
 			 */
@@ -2067,25 +2088,6 @@ static bool next_queue_may_preempt(struct bfq_data *bfqd)
 	struct bfq_sched_data *sd = &bfqd->root_group->sched_data;
 
 	return sd->next_in_service != sd->in_service_entity;
-}
-
-
-/*
- * This function tells whether entity stops being a candidate for next
- * service, according to the following logic.
- *
- * This function is invoked for an entity that is about to be set in
- * service. If such an entity is a queue, then the entity is no longer
- * a candidate for next service (i.e, a candidate entity to serve
- * after the in-service entity is expired). The function then returns
- * true.
- */
-static bool bfq_no_longer_next_in_service(struct bfq_entity *entity)
-{
-	if (bfq_entity_to_bfqq(entity))
-		return true;
-
-	return false;
 }
 
 /*
