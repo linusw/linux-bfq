@@ -226,6 +226,18 @@ struct bfq_entity {
 };
 
 /**
+ * struct bfq_ttime - per process thinktime stats.
+ */
+struct bfq_ttime {
+	u64 last_end_request; /* completion time of last request */
+
+	u64 ttime_total; /* total process thinktime */
+	unsigned long ttime_samples; /* number of thinktime samples */
+	u64 ttime_mean; /* average process thinktime */
+
+};
+
+/**
  * struct bfq_queue - leaf schedulable entity.
  *
  * A bfq_queue is a leaf request queue; it can be associated with an
@@ -271,6 +283,9 @@ struct bfq_queue {
 	/* node for active/idle bfqq list inside parent bfqd */
 	struct list_head bfqq_list;
 
+	/* associated @bfq_ttime struct */
+	struct bfq_ttime ttime;
+
 	/* bit vector: a 1 for each seeky requests in history */
 	u32 seek_history;
 	/* position of the last request enqueued */
@@ -289,18 +304,6 @@ struct bfq_queue {
 };
 
 /**
- * struct bfq_ttime - per process thinktime stats.
- */
-struct bfq_ttime {
-	u64 last_end_request; /* completion time of last request */
-
-	u64 ttime_total; /* total process thinktime */
-	unsigned long ttime_samples; /* number of thinktime samples */
-	u64 ttime_mean; /* average process thinktime */
-
-};
-
-/**
  * struct bfq_io_cq - per (request_queue, io_context) structure.
  */
 struct bfq_io_cq {
@@ -308,8 +311,6 @@ struct bfq_io_cq {
 	struct io_cq icq; /* must be the first member */
 	/* array of two process queues, the sync and the async */
 	struct bfq_queue *bfqq[2];
-	/* associated @bfq_ttime struct */
-	struct bfq_ttime ttime;
 	/* per (request_queue, blkcg) ioprio */
 	int ioprio;
 };
@@ -2003,9 +2004,9 @@ static void bfq_bfqq_handle_idle_busy_switch(struct bfq_data *bfqd,
 		 * bfq_bfqq_update_budg_for_activation for
 		 * details on the usage of the next variable.
 		 */
-		arrived_in_time = ktime_get_ns() <=
-			RQ_BIC(rq)->ttime.last_end_request +
-			bfqd->bfq_slice_idle * 3ULL;
+		arrived_in_time =  ktime_get_ns() <=
+			bfqq->ttime.last_end_request +
+			bfqd->bfq_slice_idle * 3;
 
 	/*
 	 * Update budget and check whether bfqq may want to preempt
@@ -3045,11 +3046,6 @@ static void bfq_exit_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 	bfq_put_queue(bfqq);
 }
 
-static void bfq_init_icq(struct io_cq *icq)
-{
-	icq_to_bic(icq)->ttime.last_end_request = ktime_get_ns() - (1ULL<<32);
-}
-
 static void bfq_exit_icq(struct io_cq *icq)
 {
 	struct bfq_io_cq *bic = icq_to_bic(icq);
@@ -3158,6 +3154,9 @@ static void bfq_init_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 		bfq_mark_bfqq_sync(bfqq);
 	} else
 		bfq_clear_bfqq_sync(bfqq);
+
+	bfqq->ttime.last_end_request = ktime_get_ns() - (1ULL<<32);
+
 	bfq_mark_bfqq_IO_bound(bfqq);
 
 	bfqq->pid = pid;
@@ -3243,14 +3242,14 @@ out:
 }
 
 static void bfq_update_io_thinktime(struct bfq_data *bfqd,
-				    struct bfq_io_cq *bic)
+				    struct bfq_queue *bfqq)
 {
-	struct bfq_ttime *ttime = &bic->ttime;
-	u64 elapsed = ktime_get_ns() - bic->ttime.last_end_request;
+	struct bfq_ttime *ttime = &bfqq->ttime;
+	u64 elapsed = ktime_get_ns() - bfqq->ttime.last_end_request;
 
 	elapsed = min_t(u64, elapsed, 2ULL * bfqd->bfq_slice_idle);
 
-	ttime->ttime_samples = (7*bic->ttime.ttime_samples + 256) / 8;
+	ttime->ttime_samples = (7*bfqq->ttime.ttime_samples + 256) / 8;
 	ttime->ttime_total = div_u64(7*ttime->ttime_total + 256*elapsed,  8);
 	ttime->ttime_mean = div64_ul(ttime->ttime_total + 128,
 				     ttime->ttime_samples);
@@ -3295,8 +3294,8 @@ static void bfq_update_idle_window(struct bfq_data *bfqd,
 	    bfqd->bfq_slice_idle == 0 ||
 		(bfqd->hw_tag && BFQQ_SEEKY(bfqq)))
 		enable_idle = 0;
-	else if (bfq_sample_valid(bic->ttime.ttime_samples)) {
-		if (bic->ttime.ttime_mean > bfqd->bfq_slice_idle)
+	else if (bfq_sample_valid(bfqq->ttime.ttime_samples)) {
+		if (bfqq->ttime.ttime_mean > bfqd->bfq_slice_idle)
 			enable_idle = 0;
 		else
 			enable_idle = 1;
@@ -3322,7 +3321,7 @@ static void bfq_rq_enqueued(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	if (rq->cmd_flags & REQ_META)
 		bfqq->meta_pending++;
 
-	bfq_update_io_thinktime(bfqd, bic);
+	bfq_update_io_thinktime(bfqd, bfqq);
 	bfq_update_io_seektime(bfqd, bfqq, rq);
 	if (bfqq->entity.service > bfq_max_budget(bfqd) / 8 ||
 	    !BFQQ_SEEKY(bfqq))
@@ -3435,7 +3434,7 @@ static void bfq_completed_request(struct request_queue *q, struct request *rq)
 	bfqd->rq_in_driver--;
 	bfqq->dispatched--;
 
-	RQ_BIC(rq)->ttime.last_end_request = ktime_get_ns();
+	bfqq->ttime.last_end_request = now_ns;
 
 	/*
 	 * If this is the in-service queue, check if it needs to be expired,
@@ -4009,7 +4008,6 @@ static struct elevator_type iosched_bfq = {
 		.elevator_completed_req_fn =	bfq_completed_request,
 		.elevator_former_req_fn =	elv_rb_former_request,
 		.elevator_latter_req_fn =	elv_rb_latter_request,
-		.elevator_init_icq_fn =		bfq_init_icq,
 		.elevator_exit_icq_fn =		bfq_exit_icq,
 		.elevator_set_req_fn =		bfq_set_request,
 		.elevator_put_req_fn =		bfq_put_request,
