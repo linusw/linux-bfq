@@ -3319,6 +3319,9 @@ static inline void bfqg_stats_update_completion(struct bfq_group *bfqg,
 			uint64_t start_time, uint64_t io_start_time, int op,
 			int op_flags) { }
 
+static void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
+			  struct bfq_group *bfqg) {}
+
 static void bfq_init_entity(struct bfq_entity *entity,
 			    struct bfq_group *bfqg)
 {
@@ -3339,11 +3342,6 @@ bfq_bic_update_cgroup(struct bfq_io_cq *bic, struct bio *bio)
 	struct bfq_data *bfqd = bic_to_bfqd(bic);
 
 	return bfqd->root_group;
-}
-
-static void bfq_disconnect_groups(struct bfq_data *bfqd)
-{
-	bfq_put_async_queues(bfqd, bfqd->root_group);
 }
 
 static struct bfq_group *bfq_find_set_group(struct bfq_data *bfqd,
@@ -5021,9 +5019,14 @@ static struct bfq_queue *bfq_get_queue(struct bfq_data *bfqd,
 	 * prune it.
 	 */
 	if (async_bfqq) {
-		bfqq->ref++;
-		bfq_log_bfqq(bfqd, bfqq,
-			     "get_queue, bfqq not in async: %p, %d",
+		bfqq->ref++; /*
+			      * Extra group reference, w.r.t. sync
+			      * queue. This extra reference is removed
+			      * only if bfqq->bfqg disappears, to
+			      * guarantee that this queue is not freed
+			      * until its group goes away.
+			      */
+		bfq_log_bfqq(bfqd, bfqq, "get_queue, bfqq not in async: %p, %d",
 			     bfqq, bfqq->ref);
 		*async_bfqq = bfqq;
 	}
@@ -5445,9 +5448,8 @@ static void __bfq_put_async_bfqq(struct bfq_data *bfqd,
 
 	bfq_log(bfqd, "put_async_bfqq: %p", bfqq);
 	if (bfqq) {
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
 		bfq_bfqq_move(bfqd, bfqq, bfqd->root_group);
-#endif
+
 		bfq_log_bfqq(bfqd, bfqq, "put_async_bfqq: putting %p, %d",
 			     bfqq, bfqq->ref);
 		bfq_put_queue(bfqq);
@@ -5485,9 +5487,6 @@ static void bfq_exit_queue(struct elevator_queue *e)
 	list_for_each_entry_safe(bfqq, n, &bfqd->idle_list, bfqq_list)
 		bfq_deactivate_bfqq(bfqd, bfqq, false, false);
 
-#ifndef CONFIG_BFQ_GROUP_IOSCHED
-	bfq_disconnect_groups(bfqd);
-#endif
 	spin_unlock_irq(q->queue_lock);
 
 	bfq_shutdown_timer_wq(bfqd);
@@ -5495,6 +5494,7 @@ static void bfq_exit_queue(struct elevator_queue *e)
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 	blkcg_deactivate_policy(q, &blkcg_policy_bfq);
 #else
+	bfq_put_async_queues(bfqd, bfqd->root_group);
 	kfree(bfqd->root_group);
 #endif
 
