@@ -1322,7 +1322,7 @@ static int __bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 static void bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 {
 	struct bfq_sched_data *sd;
-	struct bfq_entity *parent;
+	struct bfq_entity *parent = NULL;
 
 	for_each_entity_safe(entity, parent) {
 		sd = entity->sched_data;
