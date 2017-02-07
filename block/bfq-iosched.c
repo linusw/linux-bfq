@@ -3945,27 +3945,12 @@ static void bfq_exit_icq_bfqq(struct bfq_io_cq *bic, bool is_sync)
 	}
 }
 
-static void bfq_exit_icq_body(struct work_struct *work)
-{
-	struct bfq_io_cq *bic =
-		container_of(work, struct bfq_io_cq, exit_icq_work);
-
-	bfq_exit_icq_bfqq(bic, true);
-	bfq_exit_icq_bfqq(bic, false);
-}
-
-static void bfq_init_icq(struct io_cq *icq)
-{
-	struct bfq_io_cq *bic = icq_to_bic(icq);
-
-	INIT_WORK(&bic->exit_icq_work, bfq_exit_icq_body);
-}
-
 static void bfq_exit_icq(struct io_cq *icq)
 {
 	struct bfq_io_cq *bic = icq_to_bic(icq);
 
-	kblockd_schedule_work(&bic->exit_icq_work);
+	bfq_exit_icq_bfqq(bic, true);
+	bfq_exit_icq_bfqq(bic, false);
 }
 
 /*
@@ -4828,21 +4813,9 @@ static void bfq_exit_queue(struct elevator_queue *e)
 
 	BUG_ON(bfqd->in_service_queue);
 
-	list_for_each_entry_safe(bfqq, n, &bfqd->idle_list, bfqq_list) {
-		if (bfqq->bic) /* bfqqs without bic are handled below */
-			cancel_work_sync(&bfqq->bic->exit_icq_work);
-	}
-
 	spin_lock_irq(&bfqd->lock);
-	list_for_each_entry_safe(bfqq, n, &bfqd->idle_list, bfqq_list) {
+	list_for_each_entry_safe(bfqq, n, &bfqd->idle_list, bfqq_list)
 		bfq_deactivate_bfqq(bfqd, bfqq, false, false);
-		/*
-		 * Make sure that deferred exit_icq_work completes
-		 * without errors for bfq_queues without bic
-		 */
-		if (!bfqq->bic)
-			bfqq->bfqd = NULL;
-	}
 	spin_unlock_irq(&bfqd->lock);
 
 	hrtimer_cancel(&bfqd->idle_slice_timer);
@@ -5279,7 +5252,6 @@ static struct elevator_type iosched_bfq_mq = {
 	.ops.mq = {
 		.get_rq_priv		= bfq_get_rq_private,
 		.put_rq_priv		= bfq_put_rq_private,
-		.init_icq		= bfq_init_icq,
 		.exit_icq		= bfq_exit_icq,
 		.insert_requests	= bfq_insert_requests,
 		.dispatch_request	= bfq_dispatch_request,

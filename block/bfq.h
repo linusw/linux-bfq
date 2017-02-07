@@ -338,9 +338,6 @@ struct bfq_io_cq {
 	uint64_t blkcg_serial_nr; /* the current blkcg serial */
 #endif
 
-	/* delayed work to exec the body of the the exit_icq handler */
-	struct work_struct exit_icq_work;
-
 	/*
 	 * Snapshot of the idle window before merging; taken to
 	 * remember this value while the queue is merged, so as to be
