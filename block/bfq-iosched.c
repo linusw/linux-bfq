@@ -1581,8 +1581,8 @@ static void bfq_remove_request(struct request *rq)
 	bfqg_stats_update_io_remove(bfqq_group(bfqq), rq->cmd_flags);
 }
 
-static int bfq_merge(struct request_queue *q, struct request **req,
-		     struct bio *bio)
+static enum elv_merge bfq_merge(struct request_queue *q, struct request **req,
+				struct bio *bio)
 {
 	struct bfq_data *bfqd = q->elevator->elevator_data;
 	struct request *__rq;
@@ -1597,7 +1597,7 @@ static int bfq_merge(struct request_queue *q, struct request **req,
 }
 
 static void bfq_merged_request(struct request_queue *q, struct request *req,
-			       int type)
+			       enum elv_merge type)
 {
 	if (type == ELEVATOR_FRONT_MERGE &&
 	    rb_prev(&req->rb_node) &&
