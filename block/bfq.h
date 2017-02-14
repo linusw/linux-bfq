@@ -647,6 +647,17 @@ BFQ_BFQQ_FNS(softrt_update);
 
 /* Logging facilities. */
 #ifdef CONFIG_BFQ_REDIRECT_TO_CONSOLE
+
+static const char *checked_dev_name(const struct device *dev)
+{
+	static const char nodev[] = "nodev";
+
+	if (dev)
+		return dev_name(dev);
+
+	return nodev;
+}
+
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 static struct bfq_group *bfqq_group(struct bfq_queue *bfqq);
 static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
@@ -656,7 +667,8 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 									\
 	assert_spin_locked((bfqd)->queue->queue_lock);			\
 	blkg_path(bfqg_to_blkg(bfqq_group(bfqq)), __pbuf, sizeof(__pbuf)); \
-	pr_crit("bfq%d%c %s " fmt "\n", 			\
+	pr_crit("%s bfq%d%c %s " fmt "\n", 				\
+		checked_dev_name((bfqd)->queue->backing_dev_info->dev),	\
 		(bfqq)->pid,						\
 		bfq_bfqq_sync((bfqq)) ? 'S' : 'A',			\
 		__pbuf, ##args);					\
@@ -666,21 +678,26 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 	char __pbuf[128];						\
 									\
 	blkg_path(bfqg_to_blkg(bfqg), __pbuf, sizeof(__pbuf));		\
-	pr_crit("%s " fmt "\n", __pbuf, ##args);	\
+	pr_crit("%s %s " fmt "\n",					\
+	checked_dev_name((bfqd)->queue->backing_dev_info->dev),		\
+	__pbuf, ##args);						\
 } while (0)
 
 #else /* CONFIG_BFQ_GROUP_IOSCHED */
 
-#define bfq_log_bfqq(bfqd, bfqq, fmt, args...)		\
-	pr_crit("bfq%d%c " fmt "\n", (bfqq)->pid,		\
-		bfq_bfqq_sync((bfqq)) ? 'S' : 'A',	\
+#define bfq_log_bfqq(bfqd, bfqq, fmt, args...)				\
+	pr_crit("%s bfq%d%c " fmt "\n",					\
+		checked_dev_name((bfqd)->queue->backing_dev_info->dev),	\
+		(bfqq)->pid, bfq_bfqq_sync((bfqq)) ? 'S' : 'A',		\
 		##args)
 #define bfq_log_bfqg(bfqd, bfqg, fmt, args...)		do {} while (0)
 
 #endif /* CONFIG_BFQ_GROUP_IOSCHED */
 
 #define bfq_log(bfqd, fmt, args...) \
-	pr_crit("bfq " fmt "\n", ##args)
+	pr_crit("%s bfq " fmt "\n",					\
+		checked_dev_name((bfqd)->queue->backing_dev_info->dev),	\
+		##args)
 
 #else /* CONFIG_BFQ_REDIRECT_TO_CONSOLE */
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
