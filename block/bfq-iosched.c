@@ -4458,7 +4458,7 @@ static unsigned long bfq_calc_max_budget(struct bfq_data *bfqd)
  * function of the estimated peak rate. See comments on
  * bfq_calc_max_budget(), and on T_slow and T_fast arrays.
  */
-void update_thr_responsiveness_params(struct bfq_data *bfqd)
+static void update_thr_responsiveness_params(struct bfq_data *bfqd)
 {
 	int dev_type = blk_queue_nonrot(bfqd->queue);
 
