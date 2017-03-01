@@ -4163,7 +4163,8 @@ static unsigned long bfq_calc_max_budget(struct bfq_data *bfqd)
 		jiffies_to_msecs(bfqd->bfq_timeout)>>BFQ_RATE_SHIFT;
 }
 
-void bfq_reset_rate_computation(struct bfq_data *bfqd, struct request *rq)
+static void bfq_reset_rate_computation(struct bfq_data *bfqd,
+				       struct request *rq)
 {
 	if (rq != NULL) { /* new rq dispatch now, reset accordingly */
 		bfqd->last_dispatch = bfqd->first_dispatch = ktime_get_ns();
@@ -4180,7 +4181,7 @@ void bfq_reset_rate_computation(struct bfq_data *bfqd, struct request *rq)
 		bfqd->tot_sectors_dispatched);
 }
 
-void bfq_update_rate_reset(struct bfq_data *bfqd, struct request *rq)
+static void bfq_update_rate_reset(struct bfq_data *bfqd, struct request *rq)
 {
 	u32 rate, weight, divisor;
 
@@ -4313,7 +4314,7 @@ reset_computation:
  * of the observed dispatch rate. The function assumes to be invoked
  * on every request dispatch.
  */
-void bfq_update_peak_rate(struct bfq_data *bfqd, struct request *rq)
+static void bfq_update_peak_rate(struct bfq_data *bfqd, struct request *rq)
 {
 	u64 now_ns = ktime_get_ns();
 
