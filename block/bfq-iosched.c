@@ -539,7 +539,7 @@ static const int bfq_default_max_budget = 16 * 1024;
 /* Default timeout values, in jiffies, approximating CFQ defaults. */
 static const int bfq_timeout = HZ / 8;
 
-struct kmem_cache *bfq_pool;
+static struct kmem_cache *bfq_pool;
 
 /* Below this threshold (in ms), we consider thinktime immediate. */
 #define BFQ_MIN_TT		(2 * NSEC_PER_MSEC)
