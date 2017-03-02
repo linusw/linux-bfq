@@ -1654,6 +1654,8 @@ static void bfq_update_fin_time_enqueue(struct bfq_entity *entity,
 					struct bfq_service_tree *st,
 					bool backshifted)
 {
+	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
+
 	st = __bfq_entity_update_weight_prio(st, entity);
 	bfq_calc_finish(entity, entity->budget);
 
@@ -1683,9 +1685,18 @@ static void bfq_update_fin_time_enqueue(struct bfq_entity *entity,
 	 * time. This may introduce a little unfairness among queues
 	 * with backshifted timestamps, but it does not break
 	 * worst-case fairness guarantees.
+	 *
+	 * As a special case, if bfqq is weight-raised, push up
+	 * timestamps much less, to keep very low the probability that
+	 * this push up causes the backshifted finish timestamps of
+	 * weight-raised queues to become higher than the backshifted
+	 * finish timestamps of non weight-raised queues.
 	 */
 	if (backshifted && bfq_gt(st->vtime, entity->finish)) {
 		unsigned long delta = st->vtime - entity->finish;
+
+		if (bfqq)
+			delta /= bfqq->wr_coeff;
 
 		entity->start += delta;
 		entity->finish += delta;
