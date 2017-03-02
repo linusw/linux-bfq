@@ -1198,10 +1198,25 @@ static bool bfq_update_parent_budget(struct bfq_entity *next_in_service)
  * a candidate for next service (i.e, a candidate entity to serve
  * after the in-service entity is expired). The function then returns
  * true.
+ *
+ * In contrast, the entity could stil be a candidate for next service
+ * if it is not a queue, and has more than one child. In fact, even if
+ * one of its children is about to be set in service, other children
+ * may still be the next to serve. As a consequence, a non-queue
+ * entity is not a candidate for next-service only if it has only one
+ * child. And only if this condition holds, then the function returns
+ * true for a non-queue entity.
  */
 static bool bfq_no_longer_next_in_service(struct bfq_entity *entity)
 {
+	struct bfq_group *bfqg;
+
 	if (bfq_entity_to_bfqq(entity))
+		return true;
+
+	bfqg = container_of(entity, struct bfq_group, entity);
+
+	if (bfqg->active_entities == 1)
 		return true;
 
 	return false;
