@@ -3459,7 +3459,7 @@ static int __bfq_may_queue(struct bfq_queue *bfqq)
 	return ELV_MQUEUE_MAY;
 }
 
-static int bfq_may_queue(struct request_queue *q, int op, int op_flags)
+static int bfq_may_queue(struct request_queue *q, unsigned int op)
 {
 	struct bfq_data *bfqd = q->elevator->elevator_data;
 	struct task_struct *tsk = current;
@@ -3476,7 +3476,7 @@ static int bfq_may_queue(struct request_queue *q, int op, int op_flags)
 	if (!bic)
 		return ELV_MQUEUE_MAY;
 
-	bfqq = bic_to_bfqq(bic, rw_is_sync(op, op_flags));
+	bfqq = bic_to_bfqq(bic, op_is_sync(op));
 	if (bfqq)
 		return __bfq_may_queue(bfqq);
 
