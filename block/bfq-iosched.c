@@ -66,7 +66,6 @@
 #include "blk.h"
 #include <linux/blktrace_api.h>
 #include <linux/hrtimer.h>
-#include <linux/ioprio.h>
 #include <linux/blk-cgroup.h>
 
 #define BFQ_IOPRIO_CLASSES	3
