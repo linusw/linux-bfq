@@ -15,7 +15,7 @@
  * file.
  */
 
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 
 /* bfqg stats flags */
 enum bfqg_stats_flags {
@@ -1117,7 +1117,7 @@ static struct cftype bfq_blkg_files[] = {
 	{} /* terminate */
 };
 
-#else /* BFQ_GROUP_IOSCHED_ENABLED */
+#else /* CONFIG_BFQ_GROUP_IOSCHED */
 
 static inline void bfqg_stats_update_io_add(struct bfq_group *bfqg,
 			struct bfq_queue *bfqq, unsigned int op) { }

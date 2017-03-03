@@ -19,18 +19,6 @@
 #include <linux/hrtimer.h>
 #include <linux/blk-cgroup.h>
 
-/*
- * Define an alternative macro to compile cgroups support. This is one
- * of the steps needed to let bfq-mq share the files bfq-sched.c and
- * bfq-cgroup.c with bfq. For bfq-mq, the macro
- * BFQ_GROUP_IOSCHED_ENABLED will be defined as a function of whether
- * the configuration option CONFIG_BFQ_MQ_GROUP_IOSCHED, and not
- * CONFIG_BFQ_GROUP_IOSCHED, is defined.
- */
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
-#define BFQ_GROUP_IOSCHED_ENABLED
-#endif
-
 #define BFQ_IOPRIO_CLASSES	3
 #define BFQ_CL_IDLE_TIMEOUT	(HZ/5)
 
@@ -343,7 +331,7 @@ struct bfq_io_cq {
 	struct bfq_ttime ttime;
 	/* per (request_queue, blkcg) ioprio */
 	int ioprio;
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	uint64_t blkcg_serial_nr; /* the current blkcg serial */
 #endif
 
@@ -672,7 +660,7 @@ static const char *checked_dev_name(const struct device *dev)
 	return nodev;
 }
 
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 static struct bfq_group *bfqq_group(struct bfq_queue *bfqq);
 static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 
@@ -697,7 +685,7 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 	__pbuf, ##args);						\
 } while (0)
 
-#else /* BFQ_GROUP_IOSCHED_ENABLED */
+#else /* CONFIG_BFQ_GROUP_IOSCHED */
 
 #define bfq_log_bfqq(bfqd, bfqq, fmt, args...)				\
 	pr_crit("%s bfq%d%c " fmt "\n",					\
@@ -706,7 +694,7 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 		##args)
 #define bfq_log_bfqg(bfqd, bfqg, fmt, args...)		do {} while (0)
 
-#endif /* BFQ_GROUP_IOSCHED_ENABLED */
+#endif /* CONFIG_BFQ_GROUP_IOSCHED */
 
 #define bfq_log(bfqd, fmt, args...) \
 	pr_crit("%s bfq " fmt "\n",					\
@@ -714,7 +702,7 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 		##args)
 
 #else /* CONFIG_BFQ_REDIRECT_TO_CONSOLE */
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 static struct bfq_group *bfqq_group(struct bfq_queue *bfqq);
 static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 
@@ -736,7 +724,7 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 	blk_add_trace_msg((bfqd)->queue, "%s " fmt, __pbuf, ##args);	\
 } while (0)
 
-#else /* BFQ_GROUP_IOSCHED_ENABLED */
+#else /* CONFIG_BFQ_GROUP_IOSCHED */
 
 #define bfq_log_bfqq(bfqd, bfqq, fmt, args...)	\
 	blk_add_trace_msg((bfqd)->queue, "bfq%d%c " fmt, (bfqq)->pid,	\
@@ -744,7 +732,7 @@ static struct blkcg_gq *bfqg_to_blkg(struct bfq_group *bfqg);
 				##args)
 #define bfq_log_bfqg(bfqd, bfqg, fmt, args...)		do {} while (0)
 
-#endif /* BFQ_GROUP_IOSCHED_ENABLED */
+#endif /* CONFIG_BFQ_GROUP_IOSCHED */
 
 #define bfq_log(bfqd, fmt, args...) \
 	blk_add_trace_msg((bfqd)->queue, "bfq " fmt, ##args)
@@ -764,7 +752,7 @@ enum bfqq_expiration {
 
 
 struct bfqg_stats {
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	/* number of ios merged */
 	struct blkg_rwstat		merged;
 	/* total time spent on device in ns, may not be accurate w/ queueing */
@@ -795,7 +783,7 @@ struct bfqg_stats {
 #endif
 };
 
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 /*
  * struct bfq_group_data - per-blkcg storage for the blkio subsystem.
  *
@@ -896,7 +884,7 @@ bfq_entity_service_tree(struct bfq_entity *entity)
 		bfq_log_bfqq(bfqq->bfqd, bfqq,
 			     "entity_service_tree %p %d",
 			     sched_data->service_tree + idx, idx);
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 	else {
 		struct bfq_group *bfqg =
 			container_of(entity, struct bfq_group, entity);
@@ -925,7 +913,7 @@ static struct bfq_data *bic_to_bfqd(struct bfq_io_cq *bic)
 	return bic->icq.q->elevator->elevator_data;
 }
 
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 
 static struct bfq_group *bfq_bfqq_to_bfqg(struct bfq_queue *bfqq)
 {
@@ -954,7 +942,7 @@ static struct bfq_queue *bfq_get_queue(struct bfq_data *bfqd,
 				       struct bfq_io_cq *bic);
 static void bfq_end_wr_async_queues(struct bfq_data *bfqd,
 				    struct bfq_group *bfqg);
-#ifdef BFQ_GROUP_IOSCHED_ENABLED
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
 static void bfq_put_async_queues(struct bfq_data *bfqd, struct bfq_group *bfqg);
 #endif
 static void bfq_exit_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq);
