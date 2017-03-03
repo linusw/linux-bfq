@@ -6636,8 +6636,9 @@ static void bfq_exit_icq_bfqq(struct bfq_io_cq *bic, bool is_sync)
 		 * taken on the io_context when the bic started using a
 		 * shared bfq_queue.
 		 */
-		if (bfq_bfqq_coop(bic_to_bfqq(bic, true)))
-			put_io_context(icq->ioc);
+		if (is_sync && bfq_bfqq_coop(bfqq))
+			put_io_context(bic->icq.ioc);
+
 		bfq_exit_bfqq(bfqd, bfqq);
 		bic_set_bfqq(bic, NULL, is_sync);
 		spin_unlock_irq(&bfqd->lock);
