@@ -4396,7 +4396,7 @@ static void bfq_end_wr(struct bfq_data *bfqd)
 {
 	struct bfq_queue *bfqq;
 
-	spin_lock_irq(bfqd->queue->queue_lock);
+	spin_lock_irq(&bfqd->lock);
 
 	list_for_each_entry(bfqq, &bfqd->active_list, bfqq_list)
 		bfq_bfqq_end_wr(bfqq);
@@ -4404,7 +4404,7 @@ static void bfq_end_wr(struct bfq_data *bfqd)
 		bfq_bfqq_end_wr(bfqq);
 	bfq_end_wr_async(bfqd);
 
-	spin_unlock_irq(bfqd->queue->queue_lock);
+	spin_unlock_irq(&bfqd->lock);
 }
 
 static bool bfq_allow_bio_merge(struct request_queue *q, struct request *rq,
