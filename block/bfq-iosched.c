@@ -2736,8 +2736,6 @@ static struct bfq_group *bfq_find_set_group(struct bfq_data *bfqd,
 	struct bfq_group *bfqg, *parent;
 	struct bfq_entity *entity;
 
-	assert_spin_locked(bfqd->queue->queue_lock);
-
 	bfqg = bfq_lookup_bfqg(bfqd, blkcg);
 
 	if (unlikely(!bfqg))
@@ -2838,8 +2836,6 @@ static struct bfq_group *__bfq_bic_change_cgroup(struct bfq_data *bfqd,
 	struct bfq_queue *sync_bfqq = bic_to_bfqq(bic, 1);
 	struct bfq_group *bfqg;
 	struct bfq_entity *entity;
-
-	lockdep_assert_held(bfqd->queue->queue_lock);
 
 	bfqg = bfq_find_set_group(bfqd, blkcg);
 
@@ -3987,21 +3983,13 @@ static void bfq_request_merged(struct request_queue *q, struct request *req,
 	}
 }
 
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
-static void bfq_bio_merged(struct request_queue *q, struct request *req,
-			   struct bio *bio)
-{
-	bfqg_stats_update_io_merged(bfqq_group(RQ_BFQQ(req)), bio->bi_opf);
-}
-#endif
-
 static void bfq_requests_merged(struct request_queue *q, struct request *rq,
 				struct request *next)
 {
 	struct bfq_queue *bfqq = RQ_BFQQ(rq), *next_bfqq = RQ_BFQQ(next);
 
 	if (!RB_EMPTY_NODE(&rq->rb_node))
-		return;
+		goto end;
 	spin_lock_irq(&bfqq->bfqd->lock);
 
 	/*
@@ -5354,10 +5342,6 @@ static void bfq_completed_request(struct bfq_queue *bfqq, struct bfq_data *bfqd)
 
 	bfqd->rq_in_driver--;
 	bfqq->dispatched--;
-	bfqg_stats_update_completion(bfqq_group(bfqq),
-				     rq_start_time_ns(rq),
-				     rq_io_start_time_ns(rq),
-				     rq->cmd_flags);
 
 	bfqq->ttime.last_end_request = ktime_get_ns();
 
@@ -5395,6 +5379,11 @@ static void bfq_put_rq_private(struct request_queue *q, struct request *rq)
 	struct bfq_queue *bfqq = RQ_BFQQ(rq);
 	struct bfq_data *bfqd = bfqq->bfqd;
 
+	if (rq->rq_flags & RQF_STARTED)
+		bfqg_stats_update_completion(bfqq_group(bfqq),
+					     rq_start_time_ns(rq),
+					     rq_io_start_time_ns(rq),
+					     rq->cmd_flags);
 
 	if (likely(rq->rq_flags & RQF_STARTED)) {
 		unsigned long flags;
@@ -5578,18 +5567,18 @@ static void bfq_exit_queue(struct elevator_queue *e)
 
 	spin_lock_irq(&bfqd->lock);
 	list_for_each_entry_safe(bfqq, n, &bfqd->idle_list, bfqq_list)
-		bfq_deactivate_bfqq(bfqd, bfqq, false);
+		bfq_deactivate_bfqq(bfqd, bfqq, false, false);
 	spin_unlock_irq(&bfqd->lock);
 
 	hrtimer_cancel(&bfqd->idle_slice_timer);
 
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
-	blkcg_deactivate_policy(q, &blkcg_policy_bfq);
+	blkcg_deactivate_policy(bfqd->queue, &blkcg_policy_bfq);
 #else
 	spin_lock_irq(&bfqd->lock);
 	bfq_put_async_queues(bfqd, bfqd->root_group);
 	kfree(bfqd->root_group);
-	spin_unlock_irq(q->queue_lock);
+	spin_unlock_irq(&bfqd->lock);
 #endif
 
 	kfree(bfqd);
