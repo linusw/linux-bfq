@@ -433,6 +433,7 @@ struct bfq_io_cq {
 	unsigned long saved_last_wr_start_finish;
 	unsigned long saved_wr_start_at_switch_to_srt;
 	unsigned int saved_wr_cur_max_time;
+	struct bfq_ttime saved_ttime;
 };
 
 enum bfq_device_speed {
@@ -3989,6 +3990,7 @@ bfq_bfqq_resume_state(struct bfq_queue *bfqq, struct bfq_io_cq *bic)
 	else
 		bfq_clear_bfqq_IO_bound(bfqq);
 
+	bfqq->ttime = bic->saved_ttime;
 	bfqq->wr_coeff = bic->saved_wr_coeff;
 	bfqq->wr_start_at_switch_to_srt = bic->saved_wr_start_at_switch_to_srt;
 	bfqq->last_wr_start_finish = bic->saved_last_wr_start_finish;
@@ -4998,6 +5000,7 @@ static void bfq_bfqq_save_state(struct bfq_queue *bfqq)
 	if (!bic)
 		return;
 
+	bic->saved_ttime = bfqq->ttime;
 	bic->saved_idle_window = bfq_bfqq_idle_window(bfqq);
 	bic->saved_IO_bound = bfq_bfqq_IO_bound(bfqq);
 	bic->saved_wr_coeff = bfqq->wr_coeff;
