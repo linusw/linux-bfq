@@ -307,8 +307,6 @@ struct bfq_queue {
 
 	/* pid of the process owning the queue, used for logging purposes */
 	pid_t pid;
-
-	spinlock_t lock;
 };
 
 /**
@@ -442,6 +440,18 @@ struct bfq_data {
 	struct bfq_queue oom_bfqq;
 
 	spinlock_t lock;
+
+	/*
+	 * bic associated with the task issuing current bio for
+	 * merging. This and the next field are used as a support to
+	 * be able to perform the bic lookup, needed by bio-merge
+	 * functions, before the scheduler lock is taken, and thus
+	 * avoid taking the request-queue lock while the scheduler
+	 * lock is being held.
+	 */
+	struct bfq_io_cq *bio_bic;
+	/* bfqq associated with the task issuing current bio for merging */
+	struct bfq_queue *bio_bfqq;
 };
 
 enum bfqq_state_flags {
@@ -2087,15 +2097,9 @@ static struct request *bfq_find_rq_fmerge(struct bfq_data *bfqd,
 					  struct bio *bio,
 					  struct request_queue *q)
 {
-	struct task_struct *tsk = current;
-	struct bfq_io_cq *bic;
-	struct bfq_queue *bfqq;
+	struct bfq_queue *bfqq = bfqd->bio_bfqq;
 
-	bic = bfq_bic_lookup(bfqd, tsk->io_context, q);
-	if (!bic)
-		return NULL;
 
-	bfqq = bic_to_bfqq(bic, op_is_sync(bio->bi_opf));
 	if (bfqq)
 		return elv_rb_find(&bfqq->sort_list, bio_end_sector(bio));
 
@@ -2174,9 +2178,24 @@ static bool bfq_bio_merge(struct blk_mq_hw_ctx *hctx, struct bio *bio)
 	struct request_queue *q = hctx->queue;
 	struct bfq_data *bfqd = q->elevator->elevator_data;
 	struct request *free = NULL;
+	/*
+	 * bfq_bic_lookup grabs the queue_lock: invoke it now and
+	 * store its return value for later use, to avoid nesting
+	 * queue_lock inside the bfqd->lock. We assume that the bic
+	 * returned by bfq_bic_lookup does not go away before
+	 * bfqd->lock is taken.
+	 */
+	struct bfq_io_cq *bic = bfq_bic_lookup(bfqd, current->io_context, q);
 	bool ret;
 
 	spin_lock_irq(&bfqd->lock);
+
+	if (bic)
+		bfqd->bio_bfqq = bic_to_bfqq(bic, op_is_sync(bio->bi_opf));
+	else
+		bfqd->bio_bfqq = NULL;
+	bfqd->bio_bic = bic;
+
 	ret = blk_mq_sched_try_merge(q, bio, &free);
 
 	if (free)
@@ -2272,8 +2291,7 @@ static bool bfq_allow_bio_merge(struct request_queue *q, struct request *rq,
 {
 	struct bfq_data *bfqd = q->elevator->elevator_data;
 	bool is_sync = op_is_sync(bio->bi_opf);
-	struct bfq_io_cq *bic;
-	struct bfq_queue *bfqq;
+	struct bfq_queue *bfqq = bfqd->bio_bfqq;
 
 	/*
 	 * Disallow merge of a sync bio into an async request.
@@ -2284,13 +2302,9 @@ static bool bfq_allow_bio_merge(struct request_queue *q, struct request *rq,
 	/*
 	 * Lookup the bfqq that this bio will be queued with. Allow
 	 * merge only if rq is queued there.
-	 * Queue lock is held here.
 	 */
-	bic = bfq_bic_lookup(bfqd, current->io_context, q);
-	if (!bic)
+	if (!bfqq)
 		return false;
-
-	bfqq = bic_to_bfqq(bic, is_sync);
 
 	return bfqq == RQ_BFQQ(rq);
 }
@@ -3048,7 +3062,7 @@ static struct request *bfq_dispatch_request(struct blk_mq_hw_ctx *hctx)
  * Task holds one reference to the queue, dropped when task exits.  Each rq
  * in-flight on this queue also holds a reference, dropped when rq is freed.
  *
- * Queue lock must be held here.
+ * Scheduler lock must be held here.
  */
 static void bfq_put_queue(struct bfq_queue *bfqq)
 {
@@ -3084,7 +3098,9 @@ static void bfq_exit_icq_bfqq(struct bfq_io_cq *bic, bool is_sync)
 		bfqd = bfqq->bfqd; /* NULL if scheduler already exited */
 
 	if (bfqq && bfqd) {
-		spin_lock_irq(&bfqd->lock);
+		unsigned long flags;
+
+		spin_lock_irqsave(&bfqd->lock, flags);
 		bfq_exit_bfqq(bfqd, bfqq);
 		bic_set_bfqq(bic, NULL, is_sync);
 		spin_unlock_irq(&bfqd->lock);
@@ -3182,8 +3198,6 @@ static void bfq_init_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 {
 	RB_CLEAR_NODE(&bfqq->entity.rb_node);
 	INIT_LIST_HEAD(&bfqq->fifo);
-
-	spin_lock_init(&bfqq->lock);
 
 	bfqq->ref = 0;
 	bfqq->bfqd = bfqd;
@@ -3434,14 +3448,17 @@ static void __bfq_insert_request(struct bfq_data *bfqd, struct request *rq)
 }
 
 static void bfq_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
-			      bool at_head)
+			       bool at_head)
 {
 	struct request_queue *q = hctx->queue;
 	struct bfq_data *bfqd = q->elevator->elevator_data;
 
 	spin_lock_irq(&bfqd->lock);
-	if (blk_mq_sched_try_insert_merge(q, rq))
-		goto done;
+	if (blk_mq_sched_try_insert_merge(q, rq)) {
+		spin_unlock_irq(&bfqd->lock);
+		return;
+	}
+
 	spin_unlock_irq(&bfqd->lock);
 
 	blk_mq_sched_request_inserted(rq);
@@ -3466,7 +3483,7 @@ static void bfq_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 				q->last_merge = rq;
 		}
 	}
-done:
+
 	spin_unlock_irq(&bfqd->lock);
 }
 
@@ -3567,10 +3584,10 @@ static void bfq_put_rq_private(struct request_queue *q, struct request *rq)
 		 * defer such a check and removal, to avoid
 		 * inconsistencies in the time interval from the end
 		 * of this function to the start of the deferred work.
-		 * Fortunately, this situation occurs only in process
-		 * context, so taking the scheduler lock does not
-		 * cause any deadlock, even if other locks are already
-		 * (correctly) held by this process.
+		 * This situation seems to occur only in process
+		 * context, as a consequence of a merge. In the
+		 * current version of the code, this implies that the
+		 * lock is held.
 		 */
 
 		if (!RB_EMPTY_NODE(&rq->rb_node))
