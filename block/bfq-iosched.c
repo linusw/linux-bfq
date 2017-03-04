@@ -801,6 +801,18 @@ static struct bfq_io_cq *bfq_bic_lookup(struct bfq_data *bfqd,
 	return NULL;
 }
 
+/*
+ * Scheduler run of queue, if there are requests pending and no one in the
+ * driver that will restart queueing.
+ */
+static void bfq_schedule_dispatch(struct bfq_data *bfqd)
+{
+	if (bfqd->queued != 0) {
+		bfq_log(bfqd, "schedule dispatch");
+		blk_mq_run_hw_queues(bfqd->queue, true);
+	}
+}
+
 /**
  * bfq_gt - compare two timestamps.
  * @a: first ts.
@@ -3399,18 +3411,6 @@ static struct bfq_group *bfq_create_group_hierarchy(struct bfq_data *bfqd,
 #define bfq_sample_valid(samples)	((samples) > 80)
 
 /*
- * Scheduler run of queue, if there are requests pending and no one in the
- * driver that will restart queueing.
- */
-static void bfq_schedule_dispatch(struct bfq_data *bfqd)
-{
-	if (bfqd->queued != 0) {
-		bfq_log(bfqd, "schedule dispatch");
-		blk_mq_run_hw_queues(bfqd->queue, true);
-	}
-}
-
-/*
  * Lifted from AS - choose which of rq1 and rq2 that is best served now.
  * We choose the request that is closesr to the head right now.  Distance
  * behind the head is penalized and only allowed to a certain extent.
@@ -5618,6 +5618,10 @@ static int bfq_init_queue(struct request_queue *q, struct elevator_type *e)
 	}
 	eq->elevator_data = bfqd;
 
+	spin_lock_irq(q->queue_lock);
+	q->elevator = eq;
+	spin_unlock_irq(q->queue_lock);
+
 	/*
 	 * Our fallback bfqq if bfq_find_alloc_queue() runs into OOM issues.
 	 * Grab a permanent reference to it, so that the normal code flow
@@ -5638,11 +5642,7 @@ static int bfq_init_queue(struct request_queue *q, struct elevator_type *e)
 
 	bfqd->queue = q;
 
-	bfqd->root_group = bfq_create_group_hierarchy(bfqd, q->node);
-	if (!bfqd->root_group)
-		goto out_free;
-	bfq_init_root_group(bfqd->root_group, bfqd);
-	bfq_init_entity(&bfqd->oom_bfqq.entity, bfqd->root_group);
+	INIT_LIST_HEAD(&bfqd->dispatch);
 
 	hrtimer_init(&bfqd->idle_slice_timer, CLOCK_MONOTONIC,
 		     HRTIMER_MODE_REL);
@@ -5665,9 +5665,28 @@ static int bfq_init_queue(struct request_queue *q, struct elevator_type *e)
 	bfqd->bfq_requests_within_timer = 120;
 
 	spin_lock_init(&bfqd->lock);
-	INIT_LIST_HEAD(&bfqd->dispatch);
 
-	q->elevator = eq;
+	/*
+	 * The invocation of the next bfq_create_group_hierarchy
+	 * function is the head of a chain of function calls
+	 * (bfq_create_group_hierarchy->blkcg_activate_policy->
+	 * blk_mq_freeze_queue) that may lead to the invocation of the
+	 * has_work hook function. For this reason,
+	 * bfq_create_group_hierarchy is invoked only after all
+	 * scheduler data has been initialized, apart from the fields
+	 * that can be initialized only after invoking
+	 * bfq_create_group_hierarchy. This, in particular, enables
+	 * has_work to correctly return false. Of course, to avoid
+	 * other inconsistencies, the blk-mq stack must then refrain
+	 * from invoking further scheduler hooks before this init
+	 * function is finished.
+	 */
+	bfqd->root_group = bfq_create_group_hierarchy(bfqd, q->node);
+	if (!bfqd->root_group)
+		goto out_free;
+	bfq_init_root_group(bfqd->root_group, bfqd);
+	bfq_init_entity(&bfqd->oom_bfqq.entity, bfqd->root_group);
+
 
 	return 0;
 
