@@ -1054,6 +1054,34 @@ static void bfq_schedule_dispatch(struct bfq_data *bfqd)
 	}
 }
 
+/*
+ * Next two functions release bfqd->lock and put the io context
+ * pointed by bfqd->ioc_to_put. This delayed put is used to not risk
+ * to take an ioc->lock while the scheduler lock is being held.
+ */
+static void bfq_unlock_put_ioc(struct bfq_data *bfqd)
+{
+	struct io_context *ioc_to_put = bfqd->ioc_to_put;
+
+	bfqd->ioc_to_put = NULL;
+	spin_unlock_irq(&bfqd->lock);
+
+	if (ioc_to_put)
+		put_io_context(ioc_to_put);
+}
+
+static void bfq_unlock_put_ioc_restore(struct bfq_data *bfqd,
+				       unsigned long flags)
+{
+	struct io_context *ioc_to_put = bfqd->ioc_to_put;
+
+	bfqd->ioc_to_put = NULL;
+	spin_unlock_irqrestore(&bfqd->lock, flags);
+
+	if (ioc_to_put)
+		put_io_context(ioc_to_put);
+}
+
 /**
  * bfq_gt - compare two timestamps.
  * @a: first ts.
@@ -6576,34 +6604,6 @@ start_rq:
 	}
 exit:
 	return rq;
-}
-
-/*
- * Next two functions release bfqd->lock and put the io context
- * pointed by bfqd->ioc_to_put. This delayed put is used to not risk
- * to take an ioc->lock while the scheduler lock is being held.
- */
-static void bfq_unlock_put_ioc(struct bfq_data *bfqd)
-{
-	struct io_context *ioc_to_put = bfqd->ioc_to_put;
-
-	bfqd->ioc_to_put = NULL;
-	spin_unlock_irq(&bfqd->lock);
-
-	if (ioc_to_put)
-		put_io_context(ioc_to_put);
-}
-
-static void bfq_unlock_put_ioc_restore(struct bfq_data *bfqd,
-				       unsigned long flags)
-{
-	struct io_context *ioc_to_put = bfqd->ioc_to_put;
-
-	bfqd->ioc_to_put = NULL;
-	spin_unlock_irqrestore(&bfqd->lock, flags);
-
-	if (ioc_to_put)
-		put_io_context(ioc_to_put);
 }
 
 static struct request *bfq_dispatch_request(struct blk_mq_hw_ctx *hctx)
