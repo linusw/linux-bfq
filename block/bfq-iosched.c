@@ -1990,8 +1990,8 @@ static void bfq_deactivate_entity(struct bfq_entity *entity,
 
 		if (!__bfq_deactivate_entity(entity, ins_into_idle_tree)) {
 			/*
-			 * Entity is not any tree any more, so, this
-			 * deactivation is a no-op, and there is
+			 * entity is not in any tree any more, so
+			 * this deactivation is a no-op, and there is
 			 * nothing to change for upper-level entities
 			 * (in case of expiration, this can never
 			 * happen).
