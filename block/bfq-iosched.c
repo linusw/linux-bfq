@@ -621,6 +621,12 @@ static struct bfq_io_cq *bfq_bic_lookup(struct bfq_data *bfqd,
 #define for_each_entity(entity)	\
 	for (; entity ; entity = NULL)
 
+/*
+ * For each iteration, compute parent in advance, so as to be safe if
+ * entity is deallocated during the iteration. Such a deallocation may
+ * happen as a consequence of a bfq_put_queue that frees the bfq_queue
+ * containing entity.
+ */
 #define for_each_entity_safe(entity, parent) \
 	for (parent = NULL; entity ; entity = parent)
 
@@ -1000,28 +1006,30 @@ static void bfq_idle_insert(struct bfq_service_tree *st,
 }
 
 /**
- * bfq_forget_entity - remove an entity from the wfq trees.
+ * bfq_forget_entity - do not consider entity any longer for scheduling
  * @st: the service tree.
  * @entity: the entity being removed.
+ * @is_in_service: true if entity is currently the in-service entity.
  *
- * Update the device status and forget everything about @entity, putting
- * the device reference to it, if it is a queue.  Entities belonging to
- * groups are not refcounted.
+ * Forget everything about @entity. In addition, if entity represents
+ * a queue, and the latter is not in service, then release the service
+ * reference to the queue (the one taken through bfq_get_entity). In
+ * fact, in this case, there is really no more service reference to
+ * the queue, as the latter is also outside any service tree. If,
+ * instead, the queue is in service, then __bfq_bfqd_reset_in_service
+ * will take care of putting the reference when the queue finally
+ * stops being served.
  */
 static void bfq_forget_entity(struct bfq_service_tree *st,
-			      struct bfq_entity *entity)
+			      struct bfq_entity *entity,
+			      bool is_in_service)
 {
 	struct bfq_queue *bfqq = bfq_entity_to_bfqq(entity);
-	struct bfq_sched_data *sd;
 
 	entity->on_st = 0;
 	st->wsum -= entity->weight;
-	if (bfqq) {
-		sd = entity->sched_data;
-		bfq_log_bfqq(bfqq->bfqd, bfqq, "forget_entity: %p %d",
-			     bfqq, bfqq->ref);
+	if (bfqq && !is_in_service)
 		bfq_put_queue(bfqq);
-	}
 }
 
 /**
@@ -1033,7 +1041,8 @@ static void bfq_put_idle_entity(struct bfq_service_tree *st,
 				struct bfq_entity *entity)
 {
 	bfq_idle_extract(st, entity);
-	bfq_forget_entity(st, entity);
+	bfq_forget_entity(st, entity,
+			  entity == entity->sched_data->in_service_entity);
 }
 
 /**
@@ -1224,6 +1233,12 @@ static void __bfq_activate_entity(struct bfq_entity *entity,
 			 */
 			entity->start = min_vstart;
 			st->wsum += entity->weight;
+			/*
+			 * entity is about to be inserted into a service tree,
+			 * and then set in service: get a reference to make
+			 * sure entity does not disappear until it is no
+			 * longer in service or scheduled for service.
+			 */
 			bfq_get_entity(entity);
 
 			entity->on_st = 1;
@@ -1314,13 +1329,13 @@ static int __bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 {
 	struct bfq_sched_data *sd = entity->sched_data;
 	struct bfq_service_tree *st = bfq_entity_service_tree(entity);
-	int was_in_service = entity == sd->in_service_entity;
+	int is_in_service = entity == sd->in_service_entity;
 	int ret = 0;
 
 	if (!entity->on_st)
 		return 0;
 
-	if (was_in_service) {
+	if (is_in_service) {
 		bfq_calc_finish(entity, entity->service);
 		sd->in_service_entity = NULL;
 	} else if (entity->tree == &st->active)
@@ -1328,11 +1343,11 @@ static int __bfq_deactivate_entity(struct bfq_entity *entity, int requeue)
 	else if (entity->tree == &st->idle)
 		bfq_idle_extract(st, entity);
 
-	if (was_in_service || sd->next_in_service == entity)
+	if (is_in_service || sd->next_in_service == entity)
 		ret = bfq_update_next_in_service(sd);
 
 	if (!requeue || !bfq_gt(entity->finish, st->vtime))
-		bfq_forget_entity(st, entity);
+		bfq_forget_entity(st, entity, is_in_service);
 	else
 		bfq_idle_insert(st, entity);
 
@@ -1568,14 +1583,25 @@ static struct bfq_queue *bfq_get_next_queue(struct bfq_data *bfqd)
 
 static void __bfq_bfqd_reset_in_service(struct bfq_data *bfqd)
 {
+	struct bfq_queue *in_serv_bfqq = bfqd->in_service_queue;
+	struct bfq_entity *in_serv_entity = &in_serv_bfqq->entity;
+
 	if (bfqd->in_service_bic) {
 		put_io_context(bfqd->in_service_bic->icq.ioc);
 		bfqd->in_service_bic = NULL;
 	}
 
-	bfq_clear_bfqq_wait_request(bfqd->in_service_queue);
+	bfq_clear_bfqq_wait_request(in_serv_bfqq);
 	hrtimer_try_to_cancel(&bfqd->idle_slice_timer);
 	bfqd->in_service_queue = NULL;
+
+	/*
+	 * in_serv_entity is no longer in service, so, if it is in no
+	 * service tree either, then release the service reference to
+	 * the queue it represents (taken with bfq_get_entity).
+	 */
+	if (!in_serv_entity->on_st)
+		bfq_put_queue(in_serv_bfqq);
 }
 
 static void bfq_deactivate_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq,
@@ -2134,7 +2160,6 @@ static void bfq_remove_request(struct request *rq)
 
 		if (bfq_bfqq_busy(bfqq) && bfqq != bfqd->in_service_queue) {
 			bfq_del_bfqq_busy(bfqd, bfqq, 1);
-
 			/*
 			 * bfqq emptied. In normal operation, when
 			 * bfqq is empty, bfqq->entity.service and
@@ -2145,7 +2170,8 @@ static void bfq_remove_request(struct request *rq)
 			 * this last removal occurred while bfqq is
 			 * not in service. To avoid inconsistencies,
 			 * reset both bfqq->entity.service and
-			 * bfqq->entity.budget.
+			 * bfqq->entity.budget, if bfqq has still a
+			 * process that may issue I/O requests to it.
 			 */
 			bfqq->entity.budget = bfqq->entity.service = 0;
 		}
@@ -2676,6 +2702,7 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
 			    enum bfqq_expiration reason)
 {
 	bool slow;
+	int ref;
 
 	/*
 	 * Update device peak rate for autotuning and check whether the
@@ -2703,9 +2730,11 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
 	 * reason.
 	 */
 	__bfq_bfqq_recalc_budget(bfqd, bfqq, reason);
+	ref = bfqq->ref;
 	__bfq_bfqq_expire(bfqd, bfqq);
 
-	if (!bfq_bfqq_busy(bfqq) &&
+	/* mark bfqq as waiting a request only if a bic still points to it */
+	if (ref > 1 && !bfq_bfqq_busy(bfqq) &&
 	    reason != BFQ_BFQQ_BUDGET_TIMEOUT &&
 	    reason != BFQ_BFQQ_BUDGET_EXHAUSTED)
 		bfq_mark_bfqq_non_blocking_wait_rq(bfqq);
@@ -3030,7 +3059,8 @@ static int bfq_dispatch_requests(struct request_queue *q, int force)
  * Task holds one reference to the queue, dropped when task exits.  Each rq
  * in-flight on this queue also holds a reference, dropped when rq is freed.
  *
- * Queue lock must be held here.
+ * Queue lock must be held here. Recall not to use bfqq after calling
+ * this function on it.
  */
 static void bfq_put_queue(struct bfq_queue *bfqq)
 {
@@ -3050,7 +3080,7 @@ static void bfq_exit_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 
 	bfq_log_bfqq(bfqd, bfqq, "exit_bfqq: %p, %d", bfqq, bfqq->ref);
 
-	bfq_put_queue(bfqq);
+	bfq_put_queue(bfqq); /* release process reference */
 }
 
 static void bfq_init_icq(struct io_cq *icq)
@@ -3138,6 +3168,7 @@ static void bfq_check_ioprio_change(struct bfq_io_cq *bic, struct bio *bio)
 
 	bfqq = bic_to_bfqq(bic, false);
 	if (bfqq) {
+		/* release process reference on this queue */
 		bfq_put_queue(bfqq);
 		bfqq = bfq_get_queue(bfqd, bio, BLK_RW_ASYNC, bic);
 		bic_set_bfqq(bic, bfqq, false);
@@ -3243,7 +3274,7 @@ static struct bfq_queue *bfq_get_queue(struct bfq_data *bfqd,
 	}
 
 out:
-	bfqq->ref++;
+	bfqq->ref++; /* get a process reference to this queue */
 	bfq_log_bfqq(bfqd, bfqq, "get_queue, at end: %p, %d", bfqq, bfqq->ref);
 	rcu_read_unlock();
 	return bfqq;
@@ -3646,7 +3677,7 @@ static void bfq_shutdown_timer_wq(struct bfq_data *bfqd)
 }
 
 static void __bfq_put_async_bfqq(struct bfq_data *bfqd,
-					struct bfq_queue **bfqq_ptr)
+				 struct bfq_queue **bfqq_ptr)
 {
 	struct bfq_queue *bfqq = *bfqq_ptr;
 
