@@ -5128,6 +5128,7 @@ bfq_merge_bfqqs(struct bfq_data *bfqd, struct bfq_io_cq *bic,
 	 */
 	new_bfqq->bic = NULL;
 	bfqq->bic = NULL;
+	/* release process reference to bfqq */
 	bfq_put_queue(bfqq);
 }
 
@@ -7084,7 +7085,6 @@ static void __bfq_insert_request(struct bfq_data *bfqd, struct request *rq)
 			new_bfqq->allocated++;
 			bfqq->allocated--;
 			new_bfqq->ref++;
-			bfq_put_queue(bfqq);
 			/*
 			 * If the bic associated with the process
 			 * issuing this request still points to bfqq
@@ -7096,6 +7096,11 @@ static void __bfq_insert_request(struct bfq_data *bfqd, struct request *rq)
 			if (bic_to_bfqq(RQ_BIC(rq), 1) == bfqq)
 				bfq_merge_bfqqs(bfqd, RQ_BIC(rq),
 						bfqq, new_bfqq);
+			/*
+			 * rq is about to be enqueued into new_bfqq,
+			 * release rq reference on bfqq
+			 */
+			bfq_put_queue(bfqq);
 			rq->elv.priv[1] = new_bfqq;
 			bfqq = new_bfqq;
 		}
