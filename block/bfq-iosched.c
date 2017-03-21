@@ -3861,16 +3861,10 @@ static struct request *bfq_find_rq_fmerge(struct bfq_data *bfqd,
 
 static sector_t get_sdist(sector_t last_pos, struct request *rq)
 {
-	sector_t sdist = 0;
+	if (last_pos)
+		return abs(blk_rq_pos(rq) - last_pos);
 
-	if (last_pos) {
-		if (last_pos < blk_rq_pos(rq))
-			sdist = blk_rq_pos(rq) - last_pos;
-		else
-			sdist = last_pos - blk_rq_pos(rq);
-	}
-
-	return sdist;
+	return 0;
 }
 
 #if 0 /* Still not clear if we can do without next two functions */
