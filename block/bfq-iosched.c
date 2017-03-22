@@ -4065,7 +4065,7 @@ static ssize_t bfq_strict_guarantees_store(struct elevator_queue *e,
 }
 
 #define BFQ_ATTR(name) \
-	__ATTR(name, S_IRUGO|S_IWUSR, bfq_##name##_show, bfq_##name##_store)
+	__ATTR(name, 0644, bfq_##name##_show, bfq_##name##_store)
 
 static struct elv_fs_entry bfq_attrs[] = {
 	BFQ_ATTR(fifo_expire_sync),
