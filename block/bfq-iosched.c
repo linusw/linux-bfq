@@ -7066,44 +7066,37 @@ static void bfq_rq_enqueued(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 
 static void __bfq_insert_request(struct bfq_data *bfqd, struct request *rq)
 {
-	struct bfq_queue *bfqq = RQ_BFQQ(rq), *new_bfqq;
+	struct bfq_queue *bfqq = RQ_BFQQ(rq),
+		*new_bfqq = bfq_setup_cooperator(bfqd, bfqq, rq, true);
 
-	/*
-	 * An unplug may trigger a requeue of a request from the device
-	 * driver: make sure we are in process context while trying to
-	 * merge two bfq_queues.
-	 */
-	if (!in_interrupt()) {
-		new_bfqq = bfq_setup_cooperator(bfqd, bfqq, rq, true);
-		if (new_bfqq) {
-			if (bic_to_bfqq(RQ_BIC(rq), 1) != bfqq)
-				new_bfqq = bic_to_bfqq(RQ_BIC(rq), 1);
-			/*
-			 * Release the request's reference to the old bfqq
-			 * and make sure one is taken to the shared queue.
-			 */
-			new_bfqq->allocated++;
-			bfqq->allocated--;
-			new_bfqq->ref++;
-			/*
-			 * If the bic associated with the process
-			 * issuing this request still points to bfqq
-			 * (and thus has not been already redirected
-			 * to new_bfqq or even some other bfq_queue),
-			 * then complete the merge and redirect it to
-			 * new_bfqq.
-			 */
-			if (bic_to_bfqq(RQ_BIC(rq), 1) == bfqq)
-				bfq_merge_bfqqs(bfqd, RQ_BIC(rq),
-						bfqq, new_bfqq);
-			/*
-			 * rq is about to be enqueued into new_bfqq,
-			 * release rq reference on bfqq
-			 */
-			bfq_put_queue(bfqq);
-			rq->elv.priv[1] = new_bfqq;
-			bfqq = new_bfqq;
-		}
+	if (new_bfqq) {
+		if (bic_to_bfqq(RQ_BIC(rq), 1) != bfqq)
+			new_bfqq = bic_to_bfqq(RQ_BIC(rq), 1);
+		/*
+		 * Release the request's reference to the old bfqq
+		 * and make sure one is taken to the shared queue.
+		 */
+		new_bfqq->allocated++;
+		bfqq->allocated--;
+		new_bfqq->ref++;
+		/*
+		 * If the bic associated with the process
+		 * issuing this request still points to bfqq
+		 * (and thus has not been already redirected
+		 * to new_bfqq or even some other bfq_queue),
+		 * then complete the merge and redirect it to
+		 * new_bfqq.
+		 */
+		if (bic_to_bfqq(RQ_BIC(rq), 1) == bfqq)
+			bfq_merge_bfqqs(bfqd, RQ_BIC(rq),
+					bfqq, new_bfqq);
+		/*
+		 * rq is about to be enqueued into new_bfqq,
+		 * release rq reference on bfqq
+		 */
+		bfq_put_queue(bfqq);
+		rq->elv.priv[1] = new_bfqq;
+		bfqq = new_bfqq;
 	}
 
 	bfq_add_request(rq);
