@@ -3915,40 +3915,6 @@ static ssize_t bfq_var_store(unsigned long *var, const char *page,
 	return count;
 }
 
-static ssize_t bfq_weights_show(struct elevator_queue *e, char *page)
-{
-	struct bfq_queue *bfqq;
-	struct bfq_data *bfqd = e->elevator_data;
-	ssize_t num_char = 0;
-
-	num_char += sprintf(page + num_char, "Tot reqs queued %d\n\n",
-			    bfqd->queued);
-
-	spin_lock_irq(&bfqd->lock);
-
-	num_char += sprintf(page + num_char, "Active:\n");
-	list_for_each_entry(bfqq, &bfqd->active_list, bfqq_list) {
-		num_char += sprintf(page + num_char,
-				    "pid%d: weight %hu, nr_queued %d %d\n",
-				    bfqq->pid,
-				    bfqq->entity.weight,
-				    bfqq->queued[0],
-				    bfqq->queued[1]);
-	}
-
-	num_char += sprintf(page + num_char, "Idle:\n");
-	list_for_each_entry(bfqq, &bfqd->idle_list, bfqq_list) {
-		num_char += sprintf(page + num_char,
-				    "pid%d: weight %hu\n",
-				    bfqq->pid,
-				    bfqq->entity.weight);
-	}
-
-	spin_unlock_irq(&bfqd->lock);
-
-	return num_char;
-}
-
 #define SHOW_FUNCTION(__FUNC, __VAR, __CONV)				\
 static ssize_t __FUNC(struct elevator_queue *e, char *page)		\
 {									\
@@ -4026,13 +3992,6 @@ static ssize_t __FUNC(struct elevator_queue *e, const char *page, size_t count)\
 USEC_STORE_FUNCTION(bfq_slice_idle_us_store, &bfqd->bfq_slice_idle, 0,
 		    UINT_MAX);
 #undef USEC_STORE_FUNCTION
-
-/* do nothing for the moment */
-static ssize_t bfq_weights_store(struct elevator_queue *e,
-				    const char *page, size_t count)
-{
-	return count;
-}
 
 static unsigned long bfq_estimated_max_budget(struct bfq_data *bfqd)
 {
@@ -4118,7 +4077,6 @@ static struct elv_fs_entry bfq_attrs[] = {
 	BFQ_ATTR(max_budget),
 	BFQ_ATTR(timeout_sync),
 	BFQ_ATTR(strict_guarantees),
-	BFQ_ATTR(weights),
 	__ATTR_NULL
 };
 
