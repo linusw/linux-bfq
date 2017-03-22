@@ -12,13 +12,21 @@
  *
  * Copyright (C) 2017 Paolo Valente <paolo.valente@linaro.org>
  *
- * Licensed under GPL-2.
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License as
+ *  published by the Free Software Foundation; either version 2 of the
+ *  License, or (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ *  General Public License for more details.
  *
  * BFQ is a proportional-share I/O scheduler, with some extra
  * low-latency capabilities. BFQ also supports full hierarchical
  * scheduling through cgroups. Next paragraphs provide an introduction
- * on BFQ inner workings. Details on BFQ benefits and usage can be
- * found in Documentation/block/bfq-iosched.txt.
+ * on BFQ inner workings. Details on BFQ benefits, usage and
+ * limitations can be found in Documentation/block/bfq-iosched.txt.
  *
  * BFQ is a proportional-share storage-I/O scheduling algorithm based
  * on the slice-by-slice service scheme of CFQ. But BFQ assigns
@@ -126,10 +134,13 @@ struct bfq_service_tree {
 	/* tree for idle entities (i.e., not backlogged, with V <= F_i)*/
 	struct rb_root idle;
 
-	struct bfq_entity *first_idle;	/* idle entity with minimum F_i */
-	struct bfq_entity *last_idle;	/* idle entity with maximum F_i */
+	/* idle entity with minimum F_i */
+	struct bfq_entity *first_idle;
+	/* idle entity with maximum F_i */
+	struct bfq_entity *last_idle;
 
-	u64 vtime; /* scheduler virtual time */
+	/* scheduler virtual time */
+	u64 vtime;
 	/* scheduler weight sum; active and idle entities contribute to it */
 	unsigned long wsum;
 };
@@ -151,7 +162,8 @@ struct bfq_service_tree {
  * All the fields are protected by the queue lock of the containing bfqd.
  */
 struct bfq_sched_data {
-	struct bfq_entity *in_service_entity;  /* entity in service */
+	/* entity in service */
+	struct bfq_entity *in_service_entity;
 	/* head-of-the-line entity in the scheduler */
 	struct bfq_entity *next_in_service;
 	/* array of service trees, one per ioprio_class */
@@ -184,7 +196,8 @@ struct bfq_sched_data {
  * protected by the queue lock of the containing bfqd.
  */
 struct bfq_entity {
-	struct rb_node rb_node; /* service_tree member */
+	/* service_tree member */
+	struct rb_node rb_node;
 
 	/*
 	 * flag, true if the entity is on a tree (either the active or
@@ -192,8 +205,8 @@ struct bfq_entity {
 	 */
 	int on_st;
 
-	u64 finish; /* B-WF2Q+ finish timestamp (aka F_i) */
-	u64 start;  /* B-WF2Q+ start timestamp (aka S_i) */
+	/* B-WF2Q+ start and finish timestamps [sectors/weight] */
+	u64 start, finish;
 
 	/* tree the entity is enqueued into; %NULL if not on a tree */
 	struct rb_root *tree;
@@ -210,11 +223,13 @@ struct bfq_entity {
 	/* budget, used also to calculate F_i: F_i = S_i + @budget / @weight */
 	int budget;
 
-	unsigned short weight;	/* weight of the queue */
-	unsigned short new_weight; /* next weight if a change is in progress */
+	/* weight of the queue */
+	int weight;
+	/* next weight if a change is in progress */
+	int new_weight;
 
 	/* original weight, used to implement weight boosting */
-	unsigned short orig_weight;
+	int orig_weight;
 
 	/* parent entity, for hierarchical scheduling */
 	struct bfq_entity *parent;
@@ -235,12 +250,15 @@ struct bfq_entity {
  * struct bfq_ttime - per process thinktime stats.
  */
 struct bfq_ttime {
-	u64 last_end_request; /* completion time of last request */
+	/* completion time of the last request */
+	u64 last_end_request;
 
-	u64 ttime_total; /* total process thinktime */
-	unsigned long ttime_samples; /* number of thinktime samples */
-	u64 ttime_mean; /* average process thinktime */
-
+	/* total process thinktime */
+	u64 ttime_total;
+	/* number of thinktime samples */
+	unsigned long ttime_samples;
+	/* average process thinktime */
+	u64 ttime_mean;
 };
 
 /**
@@ -284,7 +302,8 @@ struct bfq_queue {
 	/* number of requests on the dispatch list or inside driver */
 	int dispatched;
 
-	unsigned int flags; /* status flags.*/
+	/* status flags */
+	unsigned long flags;
 
 	/* node for active/idle bfqq list inside parent bfqd */
 	struct list_head bfqq_list;
@@ -383,7 +402,12 @@ struct bfq_data {
 	ktime_t last_idling_start;
 	/* number of samples used to calculate @peak_rate */
 	int peak_rate_samples;
-	/* peak transfer rate observed for a budget */
+	/*
+	 * Peak read/write rate, observed during the service of a
+	 * budget [BFQ_RATE_SHIFT * sectors/usec]. The value is
+	 * left-shifted by BFQ_RATE_SHIFT to increase precision in
+	 * fixed-point calculations.
+	 */
 	u64 peak_rate;
 	/* maximum budget allotted to a bfq_queue before rescheduling */
 	int bfq_max_budget;
@@ -455,35 +479,35 @@ struct bfq_data {
 };
 
 enum bfqq_state_flags {
-	BFQ_BFQQ_FLAG_busy = 0,		/* has requests or is in service */
-	BFQ_BFQQ_FLAG_wait_request,	/* waiting for a request */
-	BFQ_BFQQ_FLAG_non_blocking_wait_rq, /*
-					     * waiting for a request
-					     * without idling the device
-					     */
-	BFQ_BFQQ_FLAG_fifo_expire,	/* FIFO checked in this slice */
-	BFQ_BFQQ_FLAG_idle_window,	/* slice idling enabled */
-	BFQ_BFQQ_FLAG_sync,		/* synchronous queue */
-	BFQ_BFQQ_FLAG_budget_new,	/* no completion with this budget */
-	BFQ_BFQQ_FLAG_IO_bound,		/*
-					 * bfqq has timed-out at least once
-					 * having consumed at most 2/10 of
-					 * its budget
-					 */
+	BFQQF_busy = 0,		/* has requests or is in service */
+	BFQQF_wait_request,	/* waiting for a request */
+	BFQQF_non_blocking_wait_rq, /*
+				     * waiting for a request
+				     * without idling the device
+				     */
+	BFQQF_fifo_expire,	/* FIFO checked in this slice */
+	BFQQF_idle_window,	/* slice idling enabled */
+	BFQQF_sync,		/* synchronous queue */
+	BFQQF_budget_new,	/* no completion with this budget */
+	BFQQF_IO_bound,		/*
+				 * bfqq has timed-out at least once
+				 * having consumed at most 2/10 of
+				 * its budget
+				 */
 };
 
 #define BFQ_BFQQ_FNS(name)						\
 static void bfq_mark_bfqq_##name(struct bfq_queue *bfqq)		\
 {									\
-	(bfqq)->flags |= (1 << BFQ_BFQQ_FLAG_##name);			\
+	__set_bit((1 << BFQQF_##name), &(bfqq)->flags);			\
 }									\
 static void bfq_clear_bfqq_##name(struct bfq_queue *bfqq)		\
 {									\
-	(bfqq)->flags &= ~(1 << BFQ_BFQQ_FLAG_##name);			\
+	__clear_bit((1 << BFQQF_##name), &(bfqq)->flags);		\
 }									\
 static int bfq_bfqq_##name(const struct bfq_queue *bfqq)		\
 {									\
-	return ((bfqq)->flags & (1 << BFQ_BFQQ_FLAG_##name)) != 0;	\
+	return test_bit((1 << BFQQF_##name), &(bfqq)->flags);		\
 }
 
 BFQ_BFQQ_FNS(busy);
@@ -505,14 +529,14 @@ BFQ_BFQQ_FNS(IO_bound);
 
 /* Expiration reasons. */
 enum bfqq_expiration {
-	BFQ_BFQQ_TOO_IDLE = 0,		/*
+	BFQQE_TOO_IDLE = 0,		/*
 					 * queue has been idling for
 					 * too long
 					 */
-	BFQ_BFQQ_BUDGET_TIMEOUT,	/* budget took too long to be used */
-	BFQ_BFQQ_BUDGET_EXHAUSTED,	/* budget consumed */
-	BFQ_BFQQ_NO_MORE_REQUESTS,	/* the queue has no more requests */
-	BFQ_BFQQ_PREEMPTED		/* preemption in progress */
+	BFQQE_BUDGET_TIMEOUT,	/* budget took too long to be used */
+	BFQQE_BUDGET_EXHAUSTED,	/* budget consumed */
+	BFQQE_NO_MORE_REQUESTS,	/* the queue has no more requests */
+	BFQQE_PREEMPTED		/* preemption in progress */
 };
 
 static struct bfq_queue *bfq_entity_to_bfqq(struct bfq_entity *entity);
@@ -562,7 +586,7 @@ struct bfq_queue *async_idle_bfqq;
 /* Expiration time of sync (0) and async (1) requests, in ns. */
 static const u64 bfq_fifo_expire[2] = { NSEC_PER_SEC / 4, NSEC_PER_SEC / 8 };
 
-/* Maximum backwards seek, in KiB. */
+/* Maximum backwards seek (magic number lifted from CFQ), in KiB. */
 static const int bfq_back_max = 16 * 1024;
 
 /* Penalty of a backwards seek, in number of sectors. */
@@ -941,8 +965,8 @@ static unsigned short bfq_ioprio_to_weight(int ioprio)
  */
 static unsigned short bfq_weight_to_ioprio(int weight)
 {
-	return IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF - weight < 0 ?
-		0 : IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF - weight;
+	return max_t(int, 0,
+		     IOPRIO_BE_NR * BFQ_WEIGHT_CONVERSION_COEFF - weight);
 }
 
 static void bfq_get_entity(struct bfq_entity *entity)
@@ -1783,7 +1807,7 @@ static struct request *bfq_choose_req(struct bfq_data *bfqd,
 		return rq1;
 	case BFQ_RQ1_WRAP:
 		return rq2;
-	case (BFQ_RQ1_WRAP|BFQ_RQ2_WRAP): /* both rqs wrapped */
+	case BFQ_RQ1_WRAP|BFQ_RQ2_WRAP: /* both rqs wrapped */
 	default:
 		/*
 		 * Since both rqs are wrapped,
@@ -1941,11 +1965,11 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
  * In particular, bfqq may have expired for one of the following two
  * reasons:
  *
- * - BFQ_BFQQ_NO_MORE_REQUESTS bfqq did not enjoy any device idling
+ * - BFQQE_NO_MORE_REQUESTS bfqq did not enjoy any device idling
  *   and did not make it to issue a new request before its last
  *   request was served;
  *
- * - BFQ_BFQQ_TOO_IDLE bfqq did enjoy device idling, but did not issue
+ * - BFQQE_TOO_IDLE bfqq did enjoy device idling, but did not issue
  *   a new request before the expiration of the idling-time.
  *
  * Even if bfqq has expired for one of the above reasons, the process
@@ -2091,7 +2115,7 @@ static void bfq_bfqq_handle_idle_busy_switch(struct bfq_data *bfqd,
 	if (bfqd->in_service_queue && bfqq_wants_to_preempt &&
 	    next_queue_may_preempt(bfqd))
 		bfq_bfqq_expire(bfqd, bfqd->in_service_queue,
-				false, BFQ_BFQQ_PREEMPTED);
+				false, BFQQE_PREEMPTED);
 }
 
 static void bfq_add_request(struct request *rq)
@@ -2342,7 +2366,7 @@ static void __bfq_set_in_service_queue(struct bfq_data *bfqd,
 		bfq_mark_bfqq_budget_new(bfqq);
 		bfq_clear_bfqq_fifo_expire(bfqq);
 
-		bfqd->budgets_assigned = (bfqd->budgets_assigned*7 + 256) / 8;
+		bfqd->budgets_assigned = (bfqd->budgets_assigned * 7 + 256) / 8;
 
 		bfq_log_bfqq(bfqd, bfqq,
 			     "set_in_service_queue, cur-budget = %d",
@@ -2382,8 +2406,12 @@ static unsigned long bfq_default_budget(struct bfq_data *bfqd,
 
 	/*
 	 * When we need an estimate of the peak rate we need to avoid
-	 * to give budgets that are too short due to previous measurements.
-	 * So, in the first 10 assignments use a ``safe'' budget value.
+	 * to give budgets that are too short due to previous
+	 * measurements.  So, in the first 10 assignments use a
+	 * ``safe'' budget value. For such first assignment the value
+	 * of bfqd->budgets_assigned happens to be lower than 194.
+	 * See __bfq_set_in_service_queue for the formula by which
+	 * this field is computed.
 	 */
 	if (bfqd->budgets_assigned < 194 && bfqd->bfq_user_max_budget == 0)
 		budget = bfq_default_max_budget;
@@ -2510,16 +2538,16 @@ static void __bfq_bfqq_recalc_budget(struct bfq_data *bfqd,
 		 * Caveat: in all the following cases we trade latency
 		 * for throughput.
 		 */
-		case BFQ_BFQQ_TOO_IDLE:
+		case BFQQE_TOO_IDLE:
 			if (budget > min_budget + BFQ_BUDGET_STEP)
 				budget -= BFQ_BUDGET_STEP;
 			else
 				budget = min_budget;
 			break;
-		case BFQ_BFQQ_BUDGET_TIMEOUT:
+		case BFQQE_BUDGET_TIMEOUT:
 			budget = bfq_default_budget(bfqd, bfqq);
 			break;
-		case BFQ_BFQQ_BUDGET_EXHAUSTED:
+		case BFQQE_BUDGET_EXHAUSTED:
 			/*
 			 * The process still has backlog, and did not
 			 * let either the budget timeout or the disk
@@ -2532,7 +2560,7 @@ static void __bfq_bfqq_recalc_budget(struct bfq_data *bfqd,
 			budget = min(budget + 8 * BFQ_BUDGET_STEP,
 				     bfqd->bfq_max_budget);
 			break;
-		case BFQ_BFQQ_NO_MORE_REQUESTS:
+		case BFQQE_NO_MORE_REQUESTS:
 			/*
 			 * For queues that expire for this reason, it
 			 * is particularly important to keep the
@@ -2542,7 +2570,7 @@ static void __bfq_bfqq_recalc_budget(struct bfq_data *bfqd,
 			 * comments in the body of
 			 * __bfq_activate_entity. In fact, suppose
 			 * that a queue systematically expires for
-			 * BFQ_BFQQ_NO_MORE_REQUESTS and presents a
+			 * BFQQE_NO_MORE_REQUESTS and presents a
 			 * new request in time to enjoy timestamp
 			 * back-shifting. The larger the budget of the
 			 * queue is with respect to the service the
@@ -2570,7 +2598,7 @@ static void __bfq_bfqq_recalc_budget(struct bfq_data *bfqd,
 		default:
 			return;
 		}
-	} else
+	} else {
 		/*
 		 * Async queues get always the maximum possible
 		 * budget, as for them we do not care about latency
@@ -2578,6 +2606,7 @@ static void __bfq_bfqq_recalc_budget(struct bfq_data *bfqd,
 		 * by the charging factor).
 		 */
 		budget = bfqd->bfq_max_budget;
+	}
 
 	bfqq->max_budget = budget;
 
@@ -2611,8 +2640,13 @@ static unsigned long bfq_calc_max_budget(u64 peak_rate, u64 timeout)
 
 	/*
 	 * The max_budget calculated when autotuning is equal to the
-	 * amount of sectors transferred in timeout at the
-	 * estimated peak rate.
+	 * amount of sectors transferred in timeout at the estimated
+	 * peak rate. To get this value, peak_rate is, first,
+	 * multiplied by 1000, because timeout is measured in ms,
+	 * while peak_rate is measured in sectors/usecs. Then the
+	 * result of this multiplication is right-shifted by
+	 * BFQ_RATE_SHIFT, because peak_rate is equal to the value of
+	 * the peak rate left-shifted by BFQ_RATE_SHIFT.
 	 */
 	max_budget = (unsigned long)(peak_rate * 1000 *
 				     timeout >> BFQ_RATE_SHIFT);
@@ -2763,10 +2797,10 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
 	 * As above explained, 'punish' slow (i.e., seeky), timed-out
 	 * and async queues, to favor sequential sync workloads.
 	 */
-	if (slow || reason == BFQ_BFQQ_BUDGET_TIMEOUT)
+	if (slow || reason == BFQQE_BUDGET_TIMEOUT)
 		bfq_bfqq_charge_full_budget(bfqq);
 
-	if (reason == BFQ_BFQQ_TOO_IDLE &&
+	if (reason == BFQQE_TOO_IDLE &&
 	    bfqq->entity.service <= 2 * bfqq->entity.budget / 10)
 		bfq_clear_bfqq_IO_bound(bfqq);
 
@@ -2784,8 +2818,8 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
 
 	/* mark bfqq as waiting a request only if a bic still points to it */
 	if (ref > 1 && !bfq_bfqq_busy(bfqq) &&
-	    reason != BFQ_BFQQ_BUDGET_TIMEOUT &&
-	    reason != BFQ_BFQQ_BUDGET_EXHAUSTED)
+	    reason != BFQQE_BUDGET_TIMEOUT &&
+	    reason != BFQQE_BUDGET_EXHAUSTED)
 		bfq_mark_bfqq_non_blocking_wait_rq(bfqq);
 }
 
@@ -2797,7 +2831,7 @@ static void bfq_bfqq_expire(struct bfq_data *bfqd,
 static bool bfq_bfqq_budget_timeout(struct bfq_queue *bfqq)
 {
 	if (bfq_bfqq_budget_new(bfqq) ||
-	    time_before(jiffies, bfqq->budget_timeout))
+	    time_is_after_jiffies(bfqq->budget_timeout))
 		return false;
 	return true;
 }
@@ -2888,7 +2922,7 @@ static struct bfq_queue *bfq_select_queue(struct bfq_data *bfqd)
 {
 	struct bfq_queue *bfqq;
 	struct request *next_rq;
-	enum bfqq_expiration reason = BFQ_BFQQ_BUDGET_TIMEOUT;
+	enum bfqq_expiration reason = BFQQE_BUDGET_TIMEOUT;
 
 	bfqq = bfqd->in_service_queue;
 	if (!bfqq)
@@ -2922,7 +2956,7 @@ check_queue:
 			 * enough to serve the next request, even if
 			 * it comes from the fifo expired path.
 			 */
-			reason = BFQ_BFQQ_BUDGET_EXHAUSTED;
+			reason = BFQQE_BUDGET_EXHAUSTED;
 			goto expire;
 		} else {
 			/*
@@ -2962,7 +2996,7 @@ check_queue:
 		goto keep_queue;
 	}
 
-	reason = BFQ_BFQQ_NO_MORE_REQUESTS;
+	reason = BFQQE_NO_MORE_REQUESTS;
 expire:
 	bfq_bfqq_expire(bfqd, bfqq, false, reason);
 new_queue:
@@ -3011,7 +3045,7 @@ static struct request *bfq_dispatch_rq_from_bfqq(struct bfq_data *bfqd,
 	return rq;
 
 expire:
-	bfq_bfqq_expire(bfqd, bfqq, false, BFQ_BFQQ_BUDGET_EXHAUSTED);
+	bfq_bfqq_expire(bfqd, bfqq, false, BFQQE_BUDGET_EXHAUSTED);
 	return rq;
 }
 
@@ -3280,7 +3314,8 @@ static void bfq_init_bfqq(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	} else
 		bfq_clear_bfqq_sync(bfqq);
 
-	bfqq->ttime.last_end_request = ktime_get_ns() - (1ULL<<32);
+	/* set end request to minus infinity from now */
+	bfqq->ttime.last_end_request = ktime_get_ns() + 1;
 
 	bfq_mark_bfqq_IO_bound(bfqq);
 
@@ -3499,7 +3534,7 @@ static void bfq_rq_enqueued(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 		 */
 		if (budget_timeout)
 			bfq_bfqq_expire(bfqd, bfqq, false,
-					BFQ_BFQQ_BUDGET_TIMEOUT);
+					BFQQE_BUDGET_TIMEOUT);
 	}
 }
 
@@ -3609,12 +3644,12 @@ static void bfq_completed_request(struct bfq_queue *bfqq, struct bfq_data *bfqd)
 			return;
 		} else if (bfq_may_expire_for_budg_timeout(bfqq))
 			bfq_bfqq_expire(bfqd, bfqq, false,
-					BFQ_BFQQ_BUDGET_TIMEOUT);
+					BFQQE_BUDGET_TIMEOUT);
 		else if (RB_EMPTY_ROOT(&bfqq->sort_list) &&
 			 (bfqq->dispatched == 0 ||
 			  !bfq_bfqq_may_idle(bfqq)))
 			bfq_bfqq_expire(bfqd, bfqq, false,
-					BFQ_BFQQ_NO_MORE_REQUESTS);
+					BFQQE_NO_MORE_REQUESTS);
 	}
 }
 
@@ -3726,7 +3761,7 @@ static void bfq_idle_slice_timer_body(struct bfq_queue *bfqq)
 		 * for budget timeout without wasting
 		 * guarantees
 		 */
-		reason = BFQ_BFQQ_BUDGET_TIMEOUT;
+		reason = BFQQE_BUDGET_TIMEOUT;
 	else if (bfqq->queued[0] == 0 && bfqq->queued[1] == 0)
 		/*
 		 * The queue may not be empty upon timer expiration,
@@ -3734,7 +3769,7 @@ static void bfq_idle_slice_timer_body(struct bfq_queue *bfqq)
 		 * first request of the in-service queue arrives
 		 * during disk idling.
 		 */
-		reason = BFQ_BFQQ_TOO_IDLE;
+		reason = BFQQE_TOO_IDLE;
 	else
 		goto schedule_dispatch;
 

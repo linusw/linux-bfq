@@ -15,7 +15,8 @@ On average CPUs, the current version of BFQ can handle devices
 performing at most ~30K IOPS; at most ~50 KIOPS on faster CPUs. As a
 reference, 30-50 KIOPS correspond to very high bandwidths with
 sequential I/O (e.g., 8-12 GB/s if I/O requests are 256 KB large), and
-to 120-200 MB/s with 4KB random I/O.
+to 120-200 MB/s with 4KB random I/O. BFQ has not yet been tested on
+multi-queue devices.
 
 The table of contents follow. Impatients can just jump to Section 3.
 
