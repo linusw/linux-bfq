@@ -6569,15 +6569,6 @@ static ssize_t bfq_var_store(unsigned long *var, const char *page,
 	return count;
 }
 
-static ssize_t bfq_wr_max_time_show(struct elevator_queue *e, char *page)
-{
-	struct bfq_data *bfqd = e->elevator_data;
-
-	return sprintf(page, "%d\n", bfqd->bfq_wr_max_time > 0 ?
-		       jiffies_to_msecs(bfqd->bfq_wr_max_time) :
-		       jiffies_to_msecs(bfq_wr_duration(bfqd)));
-}
-
 #define SHOW_FUNCTION(__FUNC, __VAR, __CONV)				\
 static ssize_t __FUNC(struct elevator_queue *e, char *page)		\
 {									\
@@ -6598,10 +6589,6 @@ SHOW_FUNCTION(bfq_max_budget_show, bfqd->bfq_user_max_budget, 0);
 SHOW_FUNCTION(bfq_timeout_sync_show, bfqd->bfq_timeout, 1);
 SHOW_FUNCTION(bfq_strict_guarantees_show, bfqd->strict_guarantees, 0);
 SHOW_FUNCTION(bfq_low_latency_show, bfqd->low_latency, 0);
-SHOW_FUNCTION(bfq_wr_coeff_show, bfqd->bfq_wr_coeff, 0);
-SHOW_FUNCTION(bfq_wr_min_idle_time_show, bfqd->bfq_wr_min_idle_time, 1);
-SHOW_FUNCTION(bfq_wr_min_inter_arr_async_show, bfqd->bfq_wr_min_inter_arr_async,
-	1);
 #undef SHOW_FUNCTION
 
 #define USEC_SHOW_FUNCTION(__FUNC, __VAR)				\
@@ -6642,12 +6629,6 @@ STORE_FUNCTION(bfq_back_seek_max_store, &bfqd->bfq_back_max, 0, INT_MAX, 0);
 STORE_FUNCTION(bfq_back_seek_penalty_store, &bfqd->bfq_back_penalty, 1,
 		INT_MAX, 0);
 STORE_FUNCTION(bfq_slice_idle_store, &bfqd->bfq_slice_idle, 0, INT_MAX, 2);
-STORE_FUNCTION(bfq_wr_coeff_store, &bfqd->bfq_wr_coeff, 1, INT_MAX, 0);
-STORE_FUNCTION(bfq_wr_max_time_store, &bfqd->bfq_wr_max_time, 0, INT_MAX, 1);
-STORE_FUNCTION(bfq_wr_min_idle_time_store, &bfqd->bfq_wr_min_idle_time, 0,
-		INT_MAX, 1);
-STORE_FUNCTION(bfq_wr_min_inter_arr_async_store,
-		&bfqd->bfq_wr_min_inter_arr_async, 0, INT_MAX, 1);
 #undef STORE_FUNCTION
 
 #define USEC_STORE_FUNCTION(__FUNC, __PTR, MIN, MAX)			\
@@ -6758,10 +6739,6 @@ static struct elv_fs_entry bfq_attrs[] = {
 	BFQ_ATTR(timeout_sync),
 	BFQ_ATTR(strict_guarantees),
 	BFQ_ATTR(low_latency),
-	BFQ_ATTR(wr_coeff),
-	BFQ_ATTR(wr_max_time),
-	BFQ_ATTR(wr_min_idle_time),
-	BFQ_ATTR(wr_min_inter_arr_async),
 	__ATTR_NULL
 };
 
