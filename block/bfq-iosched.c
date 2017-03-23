@@ -662,15 +662,14 @@ static struct bfq_io_cq *bfq_bic_lookup(struct bfq_data *bfqd,
 	return NULL;
 }
 
+/*
+ * Next two macros are just fake loops for the moment. They will
+ * become true loops in the cgroups-enabled variant of the code. Such
+ * a variant, in its turn, will be introduced by next commit.
+ */
 #define for_each_entity(entity)	\
 	for (; entity ; entity = NULL)
 
-/*
- * For each iteration, compute parent in advance, so as to be safe if
- * entity is deallocated during the iteration. Such a deallocation may
- * happen as a consequence of a bfq_put_queue that frees the bfq_queue
- * containing entity.
- */
 #define for_each_entity_safe(entity, parent) \
 	for (parent = NULL; entity ; entity = parent)
 
