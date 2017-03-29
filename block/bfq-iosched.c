@@ -499,15 +499,15 @@ enum bfqq_state_flags {
 #define BFQ_BFQQ_FNS(name)						\
 static void bfq_mark_bfqq_##name(struct bfq_queue *bfqq)		\
 {									\
-	__set_bit((1 << BFQQF_##name), &(bfqq)->flags);			\
+	__set_bit(BFQQF_##name, &(bfqq)->flags);			\
 }									\
 static void bfq_clear_bfqq_##name(struct bfq_queue *bfqq)		\
 {									\
-	__clear_bit((1 << BFQQF_##name), &(bfqq)->flags);		\
+	__clear_bit(BFQQF_##name, &(bfqq)->flags);		\
 }									\
 static int bfq_bfqq_##name(const struct bfq_queue *bfqq)		\
 {									\
-	return test_bit((1 << BFQQF_##name), &(bfqq)->flags);		\
+	return test_bit(BFQQF_##name, &(bfqq)->flags);		\
 }
 
 BFQ_BFQQ_FNS(busy);
