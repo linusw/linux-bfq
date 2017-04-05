@@ -341,6 +341,11 @@ struct bfq_io_cq {
 #endif
 };
 
+enum bfq_device_speed {
+       BFQ_BFQD_FAST,
+       BFQ_BFQD_SLOW,
+};
+
 /**
  * struct bfq_data - per-device data structure.
  *
