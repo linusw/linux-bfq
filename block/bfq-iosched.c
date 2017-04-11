@@ -2538,8 +2538,8 @@ static bool bfq_update_peak_rate(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	delta = ktime_sub(delta, bfqd->last_budget_start);
 	usecs = ktime_to_us(delta);
 
-	/* Don't trust short/unrealistic values. */
-	if (usecs < 100 || usecs >= LONG_MAX)
+	/* don't use too short time intervals */
+	if (usecs < 1000)
 		return false;
 
 	/*
