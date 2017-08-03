@@ -122,11 +122,14 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 			max_t(unsigned short, 1, skb_shinfo(skb)->gso_segs));
 	/*
 	 * RFC4291 2.5.3
+	 * The loopback address must not be used as the source address in IPv6
+	 * packets that are sent outside of a single node. [..]
 	 * A packet received on an interface with a destination address
 	 * of loopback must be dropped.
 	 */
-	if (!(dev->flags & IFF_LOOPBACK) &&
-	    ipv6_addr_loopback(&hdr->daddr))
+	if ((ipv6_addr_loopback(&hdr->saddr) ||
+	     ipv6_addr_loopback(&hdr->daddr)) &&
+	     !(dev->flags & IFF_LOOPBACK))
 		goto err;
 
 	/* RFC4291 Errata ID: 3480
@@ -323,6 +326,7 @@ int ip6_input(struct sk_buff *skb)
 		       dev_net(skb->dev), NULL, skb, skb->dev, NULL,
 		       ip6_input_finish);
 }
+EXPORT_SYMBOL_GPL(ip6_input);
 
 int ip6_mc_input(struct sk_buff *skb)
 {

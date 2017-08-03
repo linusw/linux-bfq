@@ -38,10 +38,13 @@
 int pem_task_update_allowed_performance_levels(struct pp_eventmgr *eventmgr, struct pem_event_data *event_data)
 {
 
+	if (eventmgr == NULL || eventmgr->hwmgr == NULL)
+		return -EINVAL;
+
 	if (pem_is_hw_access_blocked(eventmgr))
 		return 0;
 
-	phm_force_dpm_levels(eventmgr->hwmgr, AMD_DPM_FORCED_LEVEL_AUTO);
+	phm_force_dpm_levels(eventmgr->hwmgr, eventmgr->hwmgr->dpm_level);
 
 	return 0;
 }
@@ -132,8 +135,7 @@ int pem_task_enable_dynamic_state_management(struct pp_eventmgr *eventmgr, struc
 
 int pem_task_disable_dynamic_state_management(struct pp_eventmgr *eventmgr, struct pem_event_data *event_data)
 {
-	/* TODO */
-	return 0;
+	return phm_disable_dynamic_state_management(eventmgr->hwmgr);
 }
 
 int pem_task_enable_clock_power_gatings_tasks(struct pp_eventmgr *eventmgr, struct pem_event_data *event_data)
@@ -155,7 +157,7 @@ int pem_task_powerdown_vce_tasks(struct pp_eventmgr *eventmgr, struct pem_event_
 
 int pem_task_disable_clock_power_gatings_tasks(struct pp_eventmgr *eventmgr, struct pem_event_data *event_data)
 {
-	/* TODO */
+	phm_disable_clock_power_gatings(eventmgr->hwmgr);
 	return 0;
 }
 

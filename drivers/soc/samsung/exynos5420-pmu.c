@@ -17,7 +17,7 @@
 
 #include "exynos-pmu.h"
 
-static struct exynos_pmu_conf exynos5420_pmu_config[] = {
+static const struct exynos_pmu_conf exynos5420_pmu_config[] = {
 	/* { .offset = offset, .val = { AFTR, LPA, SLEEP } */
 	{ EXYNOS5_ARM_CORE0_SYS_PWR_REG,		{ 0x0, 0x0, 0x0} },
 	{ EXYNOS5_DIS_IRQ_ARM_CORE0_LOCAL_SYS_PWR_REG,	{ 0x0, 0x0, 0x0} },
@@ -230,11 +230,11 @@ static void exynos5420_pmu_init(void)
 	pmu_raw_writel(EXYNOS5420_USE_STANDBY_WFI_ALL, S5P_CENTRAL_SEQ_OPTION);
 
 	value  = pmu_raw_readl(EXYNOS_L2_OPTION(0));
-	value &= ~EXYNOS5_USE_RETENTION;
+	value &= ~EXYNOS_L2_USE_RETENTION;
 	pmu_raw_writel(value, EXYNOS_L2_OPTION(0));
 
 	value = pmu_raw_readl(EXYNOS_L2_OPTION(1));
-	value &= ~EXYNOS5_USE_RETENTION;
+	value &= ~EXYNOS_L2_USE_RETENTION;
 	pmu_raw_writel(value, EXYNOS_L2_OPTION(1));
 
 	/*

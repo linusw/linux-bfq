@@ -10,6 +10,7 @@
  * Miscellaneous linux stuff
  */
 
+#include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/mm.h>
@@ -25,6 +26,7 @@
 #include <linux/platform_device.h>
 #include <linux/adb.h>
 #include <linux/cuda.h>
+#include <linux/rtc.h>
 
 #include <asm/setup.h>
 #include <asm/bootinfo.h>
@@ -34,7 +36,6 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/pgtable.h>
-#include <asm/rtc.h>
 #include <asm/machdep.h>
 
 #include <asm/macintosh.h>
@@ -161,7 +162,7 @@ void __init config_mac(void)
 	mach_halt = mac_poweroff;
 	mach_power_off = mac_poweroff;
 	mach_max_dma_address = 0xffffffff;
-#if defined(CONFIG_INPUT_M68K_BEEP) || defined(CONFIG_INPUT_M68K_BEEP_MODULE)
+#if IS_ENABLED(CONFIG_INPUT_M68K_BEEP)
 	mach_beep = mac_mksound;
 #endif
 
@@ -285,7 +286,7 @@ static struct mac_model mac_data_table[] = {
 	}, {
 		.ident		= MAC_MODEL_IISI,
 		.name		= "IIsi",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_OLD,
 		.scc_type	= MAC_SCC_II,
@@ -294,7 +295,7 @@ static struct mac_model mac_data_table[] = {
 	}, {
 		.ident		= MAC_MODEL_IIVI,
 		.name		= "IIvi",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -303,7 +304,7 @@ static struct mac_model mac_data_table[] = {
 	}, {
 		.ident		= MAC_MODEL_IIVX,
 		.name		= "IIvx",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -318,7 +319,7 @@ static struct mac_model mac_data_table[] = {
 	{
 		.ident		= MAC_MODEL_CLII,
 		.name		= "Classic II",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -351,7 +352,7 @@ static struct mac_model mac_data_table[] = {
 	{
 		.ident		= MAC_MODEL_LC,
 		.name		= "LC",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -360,7 +361,7 @@ static struct mac_model mac_data_table[] = {
 	}, {
 		.ident		= MAC_MODEL_LCII,
 		.name		= "LC II",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -369,7 +370,7 @@ static struct mac_model mac_data_table[] = {
 	}, {
 		.ident		= MAC_MODEL_LCIII,
 		.name		= "LC III",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -497,7 +498,7 @@ static struct mac_model mac_data_table[] = {
 	{
 		.ident		= MAC_MODEL_P460,
 		.name		= "Performa 460",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,
@@ -574,7 +575,7 @@ static struct mac_model mac_data_table[] = {
 	}, {
 		.ident		= MAC_MODEL_P600,
 		.name		= "Performa 600",
-		.adb_type	= MAC_ADB_IISI,
+		.adb_type	= MAC_ADB_EGRET,
 		.via_type	= MAC_VIA_IICI,
 		.scsi_type	= MAC_SCSI_LC,
 		.scc_type	= MAC_SCC_II,

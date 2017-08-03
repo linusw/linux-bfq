@@ -66,19 +66,14 @@ static int uvc_ioctl_ctrl_map(struct uvc_video_chain *chain,
 		if (xmap->menu_count == 0 ||
 		    xmap->menu_count > UVC_MAX_CONTROL_MENU_ENTRIES) {
 			ret = -EINVAL;
-			goto done;
+			goto free_map;
 		}
 
 		size = xmap->menu_count * sizeof(*map->menu_info);
-		map->menu_info = kmalloc(size, GFP_KERNEL);
-		if (map->menu_info == NULL) {
-			ret = -ENOMEM;
-			goto done;
-		}
-
-		if (copy_from_user(map->menu_info, xmap->menu_info, size)) {
-			ret = -EFAULT;
-			goto done;
+		map->menu_info = memdup_user(xmap->menu_info, size);
+		if (IS_ERR(map->menu_info)) {
+			ret = PTR_ERR(map->menu_info);
+			goto free_map;
 		}
 
 		map->menu_count = xmap->menu_count;
@@ -88,13 +83,13 @@ static int uvc_ioctl_ctrl_map(struct uvc_video_chain *chain,
 		uvc_trace(UVC_TRACE_CONTROL, "Unsupported V4L2 control type "
 			  "%u.\n", xmap->v4l2_type);
 		ret = -ENOTTY;
-		goto done;
+		goto free_map;
 	}
 
 	ret = uvc_ctrl_add_mapping(chain, map);
 
-done:
 	kfree(map->menu_info);
+free_map:
 	kfree(map);
 
 	return ret;
@@ -140,6 +135,21 @@ static __u32 uvc_try_frame_interval(struct uvc_frame *frame, __u32 interval)
 	}
 
 	return interval;
+}
+
+static __u32 uvc_v4l2_get_bytesperline(const struct uvc_format *format,
+	const struct uvc_frame *frame)
+{
+	switch (format->fcc) {
+	case V4L2_PIX_FMT_NV12:
+	case V4L2_PIX_FMT_YVU420:
+	case V4L2_PIX_FMT_YUV420:
+	case V4L2_PIX_FMT_M420:
+		return frame->wWidth;
+
+	default:
+		return format->bpp * frame->wWidth / 8;
+	}
 }
 
 static int uvc_v4l2_try_format(struct uvc_streaming *stream,
@@ -245,7 +255,7 @@ static int uvc_v4l2_try_format(struct uvc_streaming *stream,
 	fmt->fmt.pix.width = frame->wWidth;
 	fmt->fmt.pix.height = frame->wHeight;
 	fmt->fmt.pix.field = V4L2_FIELD_NONE;
-	fmt->fmt.pix.bytesperline = format->bpp * frame->wWidth / 8;
+	fmt->fmt.pix.bytesperline = uvc_v4l2_get_bytesperline(format, frame);
 	fmt->fmt.pix.sizeimage = probe->dwMaxVideoFrameSize;
 	fmt->fmt.pix.colorspace = format->colorspace;
 	fmt->fmt.pix.priv = 0;
@@ -282,7 +292,7 @@ static int uvc_v4l2_get_format(struct uvc_streaming *stream,
 	fmt->fmt.pix.width = frame->wWidth;
 	fmt->fmt.pix.height = frame->wHeight;
 	fmt->fmt.pix.field = V4L2_FIELD_NONE;
-	fmt->fmt.pix.bytesperline = format->bpp * frame->wWidth / 8;
+	fmt->fmt.pix.bytesperline = uvc_v4l2_get_bytesperline(format, frame);
 	fmt->fmt.pix.sizeimage = stream->ctrl.dwMaxVideoFrameSize;
 	fmt->fmt.pix.colorspace = format->colorspace;
 	fmt->fmt.pix.priv = 0;

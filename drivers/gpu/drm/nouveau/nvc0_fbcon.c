@@ -30,7 +30,7 @@ int
 nvc0_fbcon_fillrect(struct fb_info *info, const struct fb_fillrect *rect)
 {
 	struct nouveau_fbdev *nfbdev = info->par;
-	struct nouveau_drm *drm = nouveau_drm(nfbdev->dev);
+	struct nouveau_drm *drm = nouveau_drm(nfbdev->helper.dev);
 	struct nouveau_channel *chan = drm->channel;
 	int ret;
 
@@ -65,7 +65,7 @@ int
 nvc0_fbcon_copyarea(struct fb_info *info, const struct fb_copyarea *region)
 {
 	struct nouveau_fbdev *nfbdev = info->par;
-	struct nouveau_drm *drm = nouveau_drm(nfbdev->dev);
+	struct nouveau_drm *drm = nouveau_drm(nfbdev->helper.dev);
 	struct nouveau_channel *chan = drm->channel;
 	int ret;
 
@@ -93,7 +93,7 @@ int
 nvc0_fbcon_imageblit(struct fb_info *info, const struct fb_image *image)
 {
 	struct nouveau_fbdev *nfbdev = info->par;
-	struct nouveau_drm *drm = nouveau_drm(nfbdev->dev);
+	struct nouveau_drm *drm = nouveau_drm(nfbdev->helper.dev);
 	struct nouveau_channel *chan = drm->channel;
 	uint32_t dwords, *data = (uint32_t *)image->data;
 	uint32_t mask = ~(~0 >> (32 - info->var.bits_per_pixel));
@@ -125,7 +125,7 @@ nvc0_fbcon_imageblit(struct fb_info *info, const struct fb_image *image)
 	OUT_RING  (chan, 0);
 	OUT_RING  (chan, image->dy);
 
-	dwords = ALIGN(image->width * image->height, 32) >> 5;
+	dwords = ALIGN(ALIGN(image->width, 8) * image->height, 32) >> 5;
 	while (dwords) {
 		int push = dwords > 2047 ? 2047 : dwords;
 
@@ -148,8 +148,8 @@ int
 nvc0_fbcon_accel_init(struct fb_info *info)
 {
 	struct nouveau_fbdev *nfbdev = info->par;
-	struct drm_device *dev = nfbdev->dev;
-	struct nouveau_framebuffer *fb = &nfbdev->nouveau_fb;
+	struct drm_device *dev = nfbdev->helper.dev;
+	struct nouveau_framebuffer *fb = nouveau_framebuffer(nfbdev->helper.fb);
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_channel *chan = drm->channel;
 	int ret, format;

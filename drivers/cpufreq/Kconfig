@@ -31,23 +31,9 @@ config CPU_FREQ_BOOST_SW
 	depends on THERMAL
 
 config CPU_FREQ_STAT
-	tristate "CPU frequency translation statistics"
-	default y
+	bool "CPU frequency transition statistics"
 	help
-	  This driver exports CPU frequency statistics information through sysfs
-	  file system.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called cpufreq_stats.
-
-	  If in doubt, say N.
-
-config CPU_FREQ_STAT_DETAILS
-	bool "CPU frequency translation statistics details"
-	depends on CPU_FREQ_STAT
-	help
-	  This will show detail CPU frequency translation table in sysfs file
-	  system.
+	  Export CPU frequency statistics information through sysfs.
 
 	  If in doubt, say N.
 
@@ -200,7 +186,7 @@ config CPU_FREQ_GOV_CONSERVATIVE
 	  If in doubt, say N.
 
 config CPU_FREQ_GOV_SCHEDUTIL
-	tristate "'schedutil' cpufreq policy governor"
+	bool "'schedutil' cpufreq policy governor"
 	depends on CPU_FREQ && SMP
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
@@ -213,9 +199,6 @@ config CPU_FREQ_GOV_SCHEDUTIL
 	  case, it is proportional to the current frequency of the CPU.  The
 	  frequency tipping point is at utilization/capacity equal to 80% in
 	  both cases.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called cpufreq_schedutil.
 
 	  If in doubt, say N.
 
@@ -231,7 +214,7 @@ config CPUFREQ_DT
 	help
 	  This adds a generic DT based cpufreq driver for frequency management.
 	  It supports both uniprocessor (UP) and symmetric multiprocessor (SMP)
-	  systems which share clock and voltage across all CPUs.
+	  systems.
 
 	  If in doubt, say N.
 
@@ -280,6 +263,16 @@ config IA64_ACPI_CPUFREQ
 endif
 
 if MIPS
+config BMIPS_CPUFREQ
+	tristate "BMIPS CPUfreq Driver"
+	help
+	  This option adds a CPUfreq driver for BMIPS processors with
+	  support for configurable CPU frequency.
+
+	  For now, BMIPS5 chips are supported (such as the Broadcom 7425).
+
+	  If in doubt, say N.
+
 config LOONGSON2_CPUFREQ
 	tristate "Loongson2 CPUFreq Driver"
 	help
@@ -341,7 +334,7 @@ endif
 
 config QORIQ_CPUFREQ
 	tristate "CPU frequency scaling driver for Freescale QorIQ SoCs"
-	depends on OF && COMMON_CLK && (PPC_E500MC || ARM)
+	depends on OF && COMMON_CLK && (PPC_E500MC || ARM || ARM64)
 	depends on !CPU_THERMAL || THERMAL
 	select CLK_QORIQ
 	help

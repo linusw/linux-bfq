@@ -25,6 +25,7 @@
 #include "linux/delay.h"
 #include "hwmgr.h"
 #include "amd_acpi.h"
+#include "pp_acpi.h"
 
 bool acpi_atcs_functions_supported(void *device, uint32_t index)
 {
@@ -66,7 +67,7 @@ int acpi_pcie_perf_request(void *device, uint8_t perf_req, bool advertise)
 	int result;
 	struct cgs_system_info info = {0};
 
-	if( 0 != acpi_atcs_notify_pcie_device_ready(device))
+	if (acpi_atcs_notify_pcie_device_ready(device))
 		return -EINVAL;
 
 	info.size = sizeof(struct cgs_system_info);

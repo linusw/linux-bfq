@@ -44,6 +44,7 @@
 #include <linux/interrupt.h>
 #include <linux/log2.h>
 #include <linux/dma-mapping.h>
+#include <linux/if_ether.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_user_verbs.h>
@@ -1156,18 +1157,18 @@ static void ocrdma_get_attr(struct ocrdma_dev *dev,
 	attr->max_srq =
 		(rsp->max_srq_rpir_qps & OCRDMA_MBX_QUERY_CFG_MAX_SRQ_MASK) >>
 		OCRDMA_MBX_QUERY_CFG_MAX_SRQ_OFFSET;
-	attr->max_send_sge = ((rsp->max_write_send_sge &
+	attr->max_send_sge = ((rsp->max_recv_send_sge &
 			       OCRDMA_MBX_QUERY_CFG_MAX_SEND_SGE_MASK) >>
 			      OCRDMA_MBX_QUERY_CFG_MAX_SEND_SGE_SHIFT);
-	attr->max_recv_sge = (rsp->max_write_send_sge &
-			      OCRDMA_MBX_QUERY_CFG_MAX_SEND_SGE_MASK) >>
-	    OCRDMA_MBX_QUERY_CFG_MAX_SEND_SGE_SHIFT;
+	attr->max_recv_sge = (rsp->max_recv_send_sge &
+			      OCRDMA_MBX_QUERY_CFG_MAX_RECV_SGE_MASK) >>
+	    OCRDMA_MBX_QUERY_CFG_MAX_RECV_SGE_SHIFT;
 	attr->max_srq_sge = (rsp->max_srq_rqe_sge &
 			      OCRDMA_MBX_QUERY_CFG_MAX_SRQ_SGE_MASK) >>
 	    OCRDMA_MBX_QUERY_CFG_MAX_SRQ_SGE_OFFSET;
-	attr->max_rdma_sge = (rsp->max_write_send_sge &
-			      OCRDMA_MBX_QUERY_CFG_MAX_WRITE_SGE_MASK) >>
-	    OCRDMA_MBX_QUERY_CFG_MAX_WRITE_SGE_SHIFT;
+	attr->max_rdma_sge = (rsp->max_wr_rd_sge &
+			      OCRDMA_MBX_QUERY_CFG_MAX_RD_SGE_MASK) >>
+	    OCRDMA_MBX_QUERY_CFG_MAX_RD_SGE_SHIFT;
 	attr->max_ord_per_qp = (rsp->max_ird_ord_per_qp &
 				OCRDMA_MBX_QUERY_CFG_MAX_ORD_PER_QP_MASK) >>
 	    OCRDMA_MBX_QUERY_CFG_MAX_ORD_PER_QP_SHIFT;
@@ -1596,10 +1597,9 @@ void ocrdma_alloc_pd_pool(struct ocrdma_dev *dev)
 
 	dev->pd_mgr = kzalloc(sizeof(struct ocrdma_pd_resource_mgr),
 			      GFP_KERNEL);
-	if (!dev->pd_mgr) {
-		pr_err("%s(%d)Memory allocation failure.\n", __func__, dev->id);
+	if (!dev->pd_mgr)
 		return;
-	}
+
 	status = ocrdma_mbx_alloc_pd_range(dev);
 	if (status) {
 		pr_err("%s(%d) Unable to initialize PD pool, using default.\n",
@@ -1642,7 +1642,7 @@ static int ocrdma_build_q_conf(u32 *num_entries, int entry_size,
 static int ocrdma_mbx_create_ah_tbl(struct ocrdma_dev *dev)
 {
 	int i;
-	int status = 0;
+	int status = -ENOMEM;
 	int max_ah;
 	struct ocrdma_create_ah_tbl *cmd;
 	struct ocrdma_create_ah_tbl_rsp *rsp;
@@ -2985,7 +2985,7 @@ static int ocrdma_parse_dcbxcfg_rsp(struct ocrdma_dev *dev, int ptype,
 				OCRDMA_APP_PARAM_APP_PROTO_MASK;
 
 		if (
-			valid && proto == OCRDMA_APP_PROTO_ROCE &&
+			valid && proto == ETH_P_IBOE &&
 			proto_sel == OCRDMA_PROTO_SELECT_L2) {
 			for (slindx = 0; slindx <
 				OCRDMA_MAX_SERVICE_LEVEL_INDEX; slindx++) {

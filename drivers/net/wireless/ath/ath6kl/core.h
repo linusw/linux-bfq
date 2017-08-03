@@ -148,7 +148,7 @@ enum ath6kl_fw_capability {
 	/* ratetable is the 2 stream version (max MCS15) */
 	ATH6KL_FW_CAPABILITY_RATETABLE_MCS15,
 
-	/* firmare doesn't support IP checksumming */
+	/* firmware doesn't support IP checksumming */
 	ATH6KL_FW_CAPABILITY_NO_IP_CHECKSUM,
 
 	/* this needs to be last */
@@ -641,7 +641,6 @@ struct ath6kl_vif {
 	u32 txe_intvl;
 	u16 bg_scan_period;
 	u8 assoc_bss_dtim_period;
-	struct net_device_stats net_stats;
 	struct target_stats target_stats;
 	struct wmi_connect_cmd profile;
 	u16 rsn_capab;

@@ -56,7 +56,7 @@
 #include "be_roce.h"
 #include "ocrdma_hw.h"
 #include "ocrdma_stats.h"
-#include "ocrdma_abi.h"
+#include <rdma/ocrdma-abi.h>
 
 MODULE_VERSION(OCRDMA_ROCE_DRV_VERSION);
 MODULE_DESCRIPTION(OCRDMA_ROCE_DRV_DESC " " OCRDMA_ROCE_DRV_VERSION);
@@ -93,24 +93,34 @@ static int ocrdma_port_immutable(struct ib_device *ibdev, u8 port_num,
 	int err;
 
 	dev = get_ocrdma_dev(ibdev);
-	err = ocrdma_query_port(ibdev, port_num, &attr);
+	immutable->core_cap_flags = RDMA_CORE_PORT_IBA_ROCE;
+	if (ocrdma_is_udp_encap_supported(dev))
+		immutable->core_cap_flags |= RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP;
+
+	err = ib_query_port(ibdev, port_num, &attr);
 	if (err)
 		return err;
 
 	immutable->pkey_tbl_len = attr.pkey_tbl_len;
 	immutable->gid_tbl_len = attr.gid_tbl_len;
-	immutable->core_cap_flags = RDMA_CORE_PORT_IBA_ROCE;
-	if (ocrdma_is_udp_encap_supported(dev))
-		immutable->core_cap_flags |= RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP;
 	immutable->max_mad_size = IB_MGMT_MAD_SIZE;
 
 	return 0;
+}
+
+static void get_dev_fw_str(struct ib_device *device, char *str,
+			   size_t str_len)
+{
+	struct ocrdma_dev *dev = get_ocrdma_dev(device);
+
+	snprintf(str, str_len, "%s", &dev->attr.fw_ver[0]);
 }
 
 static int ocrdma_register_device(struct ocrdma_dev *dev)
 {
 	strlcpy(dev->ibdev.name, "ocrdma%d", IB_DEVICE_NAME_MAX);
 	ocrdma_get_guid(dev, (u8 *)&dev->ibdev.node_guid);
+	BUILD_BUG_ON(sizeof(OCRDMA_NODE_DESC) > IB_DEVICE_NODE_DESC_MAX);
 	memcpy(dev->ibdev.node_desc, OCRDMA_NODE_DESC,
 	       sizeof(OCRDMA_NODE_DESC));
 	dev->ibdev.owner = THIS_MODULE;
@@ -189,10 +199,11 @@ static int ocrdma_register_device(struct ocrdma_dev *dev)
 	dev->ibdev.alloc_ucontext = ocrdma_alloc_ucontext;
 	dev->ibdev.dealloc_ucontext = ocrdma_dealloc_ucontext;
 	dev->ibdev.mmap = ocrdma_mmap;
-	dev->ibdev.dma_device = &dev->nic_info.pdev->dev;
+	dev->ibdev.dev.parent = &dev->nic_info.pdev->dev;
 
 	dev->ibdev.process_mad = ocrdma_process_mad;
 	dev->ibdev.get_port_immutable = ocrdma_port_immutable;
+	dev->ibdev.get_dev_fw_str     = get_dev_fw_str;
 
 	if (ocrdma_get_asic_type(dev) == OCRDMA_ASIC_GEN_SKH_R) {
 		dev->ibdev.uverbs_cmd_mask |=
@@ -262,14 +273,6 @@ static ssize_t show_rev(struct device *device, struct device_attribute *attr,
 	return scnprintf(buf, PAGE_SIZE, "0x%x\n", dev->nic_info.pdev->vendor);
 }
 
-static ssize_t show_fw_ver(struct device *device, struct device_attribute *attr,
-			char *buf)
-{
-	struct ocrdma_dev *dev = dev_get_drvdata(device);
-
-	return scnprintf(buf, PAGE_SIZE, "%s\n", &dev->attr.fw_ver[0]);
-}
-
 static ssize_t show_hca_type(struct device *device,
 			     struct device_attribute *attr, char *buf)
 {
@@ -279,12 +282,10 @@ static ssize_t show_hca_type(struct device *device,
 }
 
 static DEVICE_ATTR(hw_rev, S_IRUGO, show_rev, NULL);
-static DEVICE_ATTR(fw_ver, S_IRUGO, show_fw_ver, NULL);
 static DEVICE_ATTR(hca_type, S_IRUGO, show_hca_type, NULL);
 
 static struct device_attribute *ocrdma_attributes[] = {
 	&dev_attr_hw_rev,
-	&dev_attr_fw_ver,
 	&dev_attr_hca_type
 };
 

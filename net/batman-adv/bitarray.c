@@ -1,4 +1,4 @@
-/* Copyright (C) 2006-2016  B.A.T.M.A.N. contributors:
+/* Copyright (C) 2006-2017  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich, Marek Lindner
  *
@@ -19,6 +19,8 @@
 #include "main.h"
 
 #include <linux/bitmap.h>
+
+#include "log.h"
 
 /* shift the packet array by n places. */
 static void batadv_bitmap_shift_left(unsigned long *seq_bits, s32 n)

@@ -133,7 +133,7 @@ static void pcibios_fixup_device_resources(struct pci_dev *dev)
 	if (pci_probe & PCI_NOASSIGN_BARS) {
 		/*
 		* If the BIOS did not assign the BAR, zero out the
-		* resource so the kernel doesn't attmept to assign
+		* resource so the kernel doesn't attempt to assign
 		* it later on in pci_assign_unassigned_resources
 		*/
 		for (bar = 0; bar <= PCI_STD_RESOURCE_END; bar++) {
@@ -667,7 +667,7 @@ static void set_dma_domain_ops(struct pci_dev *pdev)
 	spin_lock(&dma_domain_list_lock);
 	list_for_each_entry(domain, &dma_domain_list, node) {
 		if (pci_domain_nr(pdev->bus) == domain->domain_nr) {
-			pdev->dev.archdata.dma_ops = domain->dma_ops;
+			pdev->dev.dma_ops = domain->dma_ops;
 			break;
 		}
 	}
@@ -676,6 +676,12 @@ static void set_dma_domain_ops(struct pci_dev *pdev)
 #else
 static void set_dma_domain_ops(struct pci_dev *pdev) {}
 #endif
+
+static void set_dev_domain_options(struct pci_dev *pdev)
+{
+	if (is_vmd(pdev->bus))
+		pdev->hotplug_user_indicators = 1;
+}
 
 int pcibios_add_device(struct pci_dev *dev)
 {
@@ -707,6 +713,7 @@ int pcibios_add_device(struct pci_dev *dev)
 		iounmap(data);
 	}
 	set_dma_domain_ops(dev);
+	set_dev_domain_options(dev);
 	return 0;
 }
 
@@ -727,6 +734,15 @@ void pcibios_disable_device (struct pci_dev *dev)
 	if (!pci_dev_msi_enabled(dev) && pcibios_disable_irq)
 		pcibios_disable_irq(dev);
 }
+
+#ifdef CONFIG_ACPI_HOTPLUG_IOAPIC
+void pcibios_release_device(struct pci_dev *dev)
+{
+	if (atomic_dec_return(&dev->enable_cnt) >= 0)
+		pcibios_disable_device(dev);
+
+}
+#endif
 
 int pci_ext_cfg_avail(void)
 {

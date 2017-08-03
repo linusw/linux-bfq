@@ -57,17 +57,19 @@ static inline bool ceph_can_shift_osds(struct ceph_pg_pool_info *pool)
 	case CEPH_POOL_TYPE_EC:
 		return false;
 	default:
-		BUG_ON(1);
+		BUG();
 	}
 }
 
 struct ceph_object_locator {
 	s64 pool;
+	struct ceph_string *pool_ns;
 };
 
 static inline void ceph_oloc_init(struct ceph_object_locator *oloc)
 {
 	oloc->pool = -1;
+	oloc->pool_ns = NULL;
 }
 
 static inline bool ceph_oloc_empty(const struct ceph_object_locator *oloc)
@@ -75,18 +77,9 @@ static inline bool ceph_oloc_empty(const struct ceph_object_locator *oloc)
 	return oloc->pool == -1;
 }
 
-static inline void ceph_oloc_copy(struct ceph_object_locator *dest,
-				  const struct ceph_object_locator *src)
-{
-	dest->pool = src->pool;
-}
-
-/*
- * Maximum supported by kernel client object name length
- *
- * (probably outdated: must be >= RBD_MAX_MD_NAME_LEN -- currently 100)
- */
-#define CEPH_MAX_OID_NAME_LEN 100
+void ceph_oloc_copy(struct ceph_object_locator *dest,
+		    const struct ceph_object_locator *src);
+void ceph_oloc_destroy(struct ceph_object_locator *oloc);
 
 /*
  * 51-char inline_name is long enough for all cephfs and all but one
@@ -114,6 +107,11 @@ static inline void ceph_oid_init(struct ceph_object_id *oid)
 	oid->name = oid->inline_name;
 	oid->name_len = 0;
 }
+
+#define CEPH_OID_INIT_ONSTACK(oid)					\
+    ({ ceph_oid_init(&oid); oid; })
+#define CEPH_DEFINE_OID_ONSTACK(oid)					\
+	struct ceph_object_id oid = CEPH_OID_INIT_ONSTACK(oid)
 
 static inline bool ceph_oid_empty(const struct ceph_object_id *oid)
 {
@@ -168,8 +166,8 @@ struct ceph_osdmap {
 	 * the list of osds that store+replicate them. */
 	struct crush_map *crush;
 
-	struct mutex crush_scratch_mutex;
-	int crush_scratch_ary[CEPH_PG_MAX_SIZE * 3];
+	struct mutex crush_workspace_mutex;
+	void *crush_workspace;
 };
 
 static inline bool ceph_osd_exists(struct ceph_osdmap *map, int osd)

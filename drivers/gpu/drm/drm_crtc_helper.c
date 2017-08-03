@@ -36,6 +36,7 @@
 #include <drm/drmP.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_fb_helper.h>
@@ -52,9 +53,9 @@
  * configuration on resume with drm_helper_resume_force_mode().
  *
  * Note that this helper library doesn't track the current power state of CRTCs
- * and encoders. It can call callbacks like ->dpms() even though the hardware is
- * already in the desired state. This deficiency has been fixed in the atomic
- * helpers.
+ * and encoders. It can call callbacks like &drm_encoder_helper_funcs.dpms even
+ * though the hardware is already in the desired state. This deficiency has been
+ * fixed in the atomic helpers.
  *
  * The driver callbacks are mostly compatible with the atomic modeset helpers,
  * except for the handling of the primary plane: Atomic helpers require that the
@@ -70,38 +71,9 @@
  *
  * These legacy modeset helpers use the same function table structures as
  * all other modesetting helpers. See the documentation for struct
- * &drm_crtc_helper_funcs, struct &drm_encoder_helper_funcs and struct
+ * &drm_crtc_helper_funcs, &struct drm_encoder_helper_funcs and struct
  * &drm_connector_helper_funcs.
  */
-
-/**
- * drm_helper_move_panel_connectors_to_head() - move panels to the front in the
- * 						connector list
- * @dev: drm device to operate on
- *
- * Some userspace presumes that the first connected connector is the main
- * display, where it's supposed to display e.g. the login screen. For
- * laptops, this should be the main panel. Use this function to sort all
- * (eDP/LVDS) panels to the front of the connector list, instead of
- * painstakingly trying to initialize them in the right order.
- */
-void drm_helper_move_panel_connectors_to_head(struct drm_device *dev)
-{
-	struct drm_connector *connector, *tmp;
-	struct list_head panel_list;
-
-	INIT_LIST_HEAD(&panel_list);
-
-	list_for_each_entry_safe(connector, tmp,
-				 &dev->mode_config.connector_list, head) {
-		if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS ||
-		    connector->connector_type == DRM_MODE_CONNECTOR_eDP)
-			list_move_tail(&connector->head, &panel_list);
-	}
-
-	list_splice(&panel_list, &dev->mode_config.connector_list);
-}
-EXPORT_SYMBOL(drm_helper_move_panel_connectors_to_head);
 
 /**
  * drm_helper_encoder_in_use - check if a given encoder is in use
@@ -117,6 +89,7 @@ EXPORT_SYMBOL(drm_helper_move_panel_connectors_to_head);
 bool drm_helper_encoder_in_use(struct drm_encoder *encoder)
 {
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	struct drm_device *dev = encoder->dev;
 
 	/*
@@ -128,9 +101,15 @@ bool drm_helper_encoder_in_use(struct drm_encoder *encoder)
 		WARN_ON(!drm_modeset_is_locked(&dev->mode_config.connection_mutex));
 	}
 
-	drm_for_each_connector(connector, dev)
-		if (connector->encoder == encoder)
+
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
+		if (connector->encoder == encoder) {
+			drm_connector_list_iter_put(&conn_iter);
 			return true;
+		}
+	}
+	drm_connector_list_iter_put(&conn_iter);
 	return false;
 }
 EXPORT_SYMBOL(drm_helper_encoder_in_use);
@@ -232,6 +211,9 @@ static void __drm_helper_disable_unused_functions(struct drm_device *dev)
  */
 void drm_helper_disable_unused_functions(struct drm_device *dev)
 {
+	if (drm_core_check_feature(dev, DRIVER_ATOMIC))
+		DRM_ERROR("Called for atomic driver, this is not what you want.\n");
+
 	drm_modeset_lock_all(dev);
 	__drm_helper_disable_unused_functions(dev);
 	drm_modeset_unlock_all(dev);
@@ -462,10 +444,13 @@ drm_crtc_helper_disable(struct drm_crtc *crtc)
 
 	/* Decouple all encoders and their attached connectors from this crtc */
 	drm_for_each_encoder(encoder, dev) {
+		struct drm_connector_list_iter conn_iter;
+
 		if (encoder->crtc != crtc)
 			continue;
 
-		drm_for_each_connector(connector, dev) {
+		drm_connector_list_iter_get(dev, &conn_iter);
+		drm_for_each_connector_iter(connector, &conn_iter) {
 			if (connector->encoder != encoder)
 				continue;
 
@@ -482,6 +467,7 @@ drm_crtc_helper_disable(struct drm_crtc *crtc)
 			/* we keep a reference while the encoder is bound */
 			drm_connector_unreference(connector);
 		}
+		drm_connector_list_iter_put(&conn_iter);
 	}
 
 	__drm_helper_disable_unused_functions(dev);
@@ -491,12 +477,12 @@ drm_crtc_helper_disable(struct drm_crtc *crtc)
  * drm_crtc_helper_set_config - set a new config from userspace
  * @set: mode set configuration
  *
- * The drm_crtc_helper_set_config() helper function implements the set_config
- * callback of struct &drm_crtc_funcs for drivers using the legacy CRTC helpers.
+ * The drm_crtc_helper_set_config() helper function implements the of
+ * &drm_crtc_funcs.set_config callback for drivers using the legacy CRTC
+ * helpers.
  *
  * It first tries to locate the best encoder for each connector by calling the
- * connector ->best_encoder() (struct &drm_connector_helper_funcs) helper
- * operation.
+ * connector @drm_connector_helper_funcs.best_encoder helper operation.
  *
  * After locating the appropriate encoders, the helper function will call the
  * mode_fixup encoder and CRTC helper operations to adjust the requested mode,
@@ -507,15 +493,14 @@ drm_crtc_helper_disable(struct drm_crtc *crtc)
  *
  * If the adjusted mode is identical to the current mode but changes to the
  * frame buffer need to be applied, the drm_crtc_helper_set_config() function
- * will call the CRTC ->mode_set_base() (struct &drm_crtc_helper_funcs) helper
- * operation.
+ * will call the CRTC &drm_crtc_helper_funcs.mode_set_base helper operation.
  *
  * If the adjusted mode differs from the current mode, or if the
  * ->mode_set_base() helper operation is not provided, the helper function
  * performs a full mode set sequence by calling the ->prepare(), ->mode_set()
  * and ->commit() CRTC and encoder helper operations, in that order.
  * Alternatively it can also use the dpms and disable helper operations. For
- * details see struct &drm_crtc_helper_funcs and struct
+ * details see &struct drm_crtc_helper_funcs and struct
  * &drm_encoder_helper_funcs.
  *
  * This function is deprecated.  New drivers must implement atomic modeset
@@ -533,6 +518,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 	bool mode_changed = false; /* if true do a full mode set */
 	bool fb_changed = false; /* if true and !mode_changed just do a flip */
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	int count = 0, ro, fail = 0;
 	const struct drm_crtc_helper_funcs *crtc_funcs;
 	struct drm_mode_set save_set;
@@ -597,9 +583,10 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 	}
 
 	count = 0;
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter)
 		save_connector_encoders[count++] = connector->encoder;
-	}
+	drm_connector_list_iter_put(&conn_iter);
 
 	save_set.crtc = set->crtc;
 	save_set.mode = &set->crtc->mode;
@@ -614,8 +601,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 		if (set->crtc->primary->fb == NULL) {
 			DRM_DEBUG_KMS("crtc has no fb, full mode set\n");
 			mode_changed = true;
-		} else if (set->fb->pixel_format !=
-			   set->crtc->primary->fb->pixel_format) {
+		} else if (set->fb->format != set->crtc->primary->fb->format) {
 			mode_changed = true;
 		} else
 			fb_changed = true;
@@ -642,7 +628,8 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 
 	/* a) traverse passed in connector list and get encoders for them */
 	count = 0;
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		const struct drm_connector_helper_funcs *connector_funcs =
 			connector->helper_private;
 		new_encoder = connector->encoder;
@@ -675,6 +662,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 			connector->encoder = new_encoder;
 		}
 	}
+	drm_connector_list_iter_put(&conn_iter);
 
 	if (fail) {
 		ret = -EINVAL;
@@ -682,7 +670,8 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 	}
 
 	count = 0;
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (!connector->encoder)
 			continue;
 
@@ -700,6 +689,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 		if (new_crtc &&
 		    !drm_encoder_crtc_ok(connector->encoder, new_crtc)) {
 			ret = -EINVAL;
+			drm_connector_list_iter_put(&conn_iter);
 			goto fail;
 		}
 		if (new_crtc != connector->encoder->crtc) {
@@ -716,6 +706,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 				      connector->base.id, connector->name);
 		}
 	}
+	drm_connector_list_iter_put(&conn_iter);
 
 	/* mode_set_base is not a required function */
 	if (fb_changed && !crtc_funcs->mode_set_base)
@@ -770,9 +761,10 @@ fail:
 	}
 
 	count = 0;
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter)
 		connector->encoder = save_connector_encoders[count++];
-	}
+	drm_connector_list_iter_put(&conn_iter);
 
 	/* after fail drop reference on all unbound connectors in set, let
 	 * bound connectors keep their reference
@@ -799,12 +791,16 @@ static int drm_helper_choose_encoder_dpms(struct drm_encoder *encoder)
 {
 	int dpms = DRM_MODE_DPMS_OFF;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	struct drm_device *dev = encoder->dev;
 
-	drm_for_each_connector(connector, dev)
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter)
 		if (connector->encoder == encoder)
 			if (connector->dpms < dpms)
 				dpms = connector->dpms;
+	drm_connector_list_iter_put(&conn_iter);
+
 	return dpms;
 }
 
@@ -836,12 +832,16 @@ static int drm_helper_choose_crtc_dpms(struct drm_crtc *crtc)
 {
 	int dpms = DRM_MODE_DPMS_OFF;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	struct drm_device *dev = crtc->dev;
 
-	drm_for_each_connector(connector, dev)
+	drm_connector_list_iter_get(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter)
 		if (connector->encoder && connector->encoder->crtc == crtc)
 			if (connector->dpms < dpms)
 				dpms = connector->dpms;
+	drm_connector_list_iter_put(&conn_iter);
+
 	return dpms;
 }
 
@@ -850,14 +850,15 @@ static int drm_helper_choose_crtc_dpms(struct drm_crtc *crtc)
  * @connector: affected connector
  * @mode: DPMS mode
  *
- * The drm_helper_connector_dpms() helper function implements the ->dpms()
- * callback of struct &drm_connector_funcs for drivers using the legacy CRTC helpers.
+ * The drm_helper_connector_dpms() helper function implements the
+ * &drm_connector_funcs.dpms callback for drivers using the legacy CRTC
+ * helpers.
  *
  * This is the main helper function provided by the CRTC helper framework for
  * implementing the DPMS connector attribute. It computes the new desired DPMS
- * state for all encoders and CRTCs in the output mesh and calls the ->dpms()
- * callbacks provided by the driver in struct &drm_crtc_helper_funcs and struct
- * &drm_encoder_helper_funcs appropriately.
+ * state for all encoders and CRTCs in the output mesh and calls the
+ * &drm_crtc_helper_funcs.dpms and &drm_encoder_helper_funcs.dpms callbacks
+ * provided by the driver.
  *
  * This function is deprecated.  New drivers must implement atomic modeset
  * support, for which this function is unsuitable. Instead drivers should use
@@ -908,33 +909,6 @@ int drm_helper_connector_dpms(struct drm_connector *connector, int mode)
 	return 0;
 }
 EXPORT_SYMBOL(drm_helper_connector_dpms);
-
-/**
- * drm_helper_mode_fill_fb_struct - fill out framebuffer metadata
- * @fb: drm_framebuffer object to fill out
- * @mode_cmd: metadata from the userspace fb creation request
- *
- * This helper can be used in a drivers fb_create callback to pre-fill the fb's
- * metadata fields.
- */
-void drm_helper_mode_fill_fb_struct(struct drm_framebuffer *fb,
-				    const struct drm_mode_fb_cmd2 *mode_cmd)
-{
-	int i;
-
-	fb->width = mode_cmd->width;
-	fb->height = mode_cmd->height;
-	for (i = 0; i < 4; i++) {
-		fb->pitches[i] = mode_cmd->pitches[i];
-		fb->offsets[i] = mode_cmd->offsets[i];
-		fb->modifier[i] = mode_cmd->modifier[i];
-	}
-	drm_fb_get_bpp_depth(mode_cmd->pixel_format, &fb->depth,
-				    &fb->bits_per_pixel);
-	fb->pixel_format = mode_cmd->pixel_format;
-	fb->flags = mode_cmd->flags;
-}
-EXPORT_SYMBOL(drm_helper_mode_fill_fb_struct);
 
 /**
  * drm_helper_resume_force_mode - force-restore mode setting configuration
@@ -1123,36 +1097,3 @@ int drm_helper_crtc_mode_set_base(struct drm_crtc *crtc, int x, int y,
 	return drm_plane_helper_commit(plane, plane_state, old_fb);
 }
 EXPORT_SYMBOL(drm_helper_crtc_mode_set_base);
-
-/**
- * drm_helper_crtc_enable_color_mgmt - enable color management properties
- * @crtc: DRM CRTC
- * @degamma_lut_size: the size of the degamma lut (before CSC)
- * @gamma_lut_size: the size of the gamma lut (after CSC)
- *
- * This function lets the driver enable the color correction properties on a
- * CRTC. This includes 3 degamma, csc and gamma properties that userspace can
- * set and 2 size properties to inform the userspace of the lut sizes.
- */
-void drm_helper_crtc_enable_color_mgmt(struct drm_crtc *crtc,
-				       int degamma_lut_size,
-				       int gamma_lut_size)
-{
-	struct drm_device *dev = crtc->dev;
-	struct drm_mode_config *config = &dev->mode_config;
-
-	drm_object_attach_property(&crtc->base,
-				   config->degamma_lut_property, 0);
-	drm_object_attach_property(&crtc->base,
-				   config->ctm_property, 0);
-	drm_object_attach_property(&crtc->base,
-				   config->gamma_lut_property, 0);
-
-	drm_object_attach_property(&crtc->base,
-				   config->degamma_lut_size_property,
-				   degamma_lut_size);
-	drm_object_attach_property(&crtc->base,
-				   config->gamma_lut_size_property,
-				   gamma_lut_size);
-}
-EXPORT_SYMBOL(drm_helper_crtc_enable_color_mgmt);

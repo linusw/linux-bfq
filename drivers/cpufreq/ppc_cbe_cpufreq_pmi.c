@@ -94,16 +94,12 @@ static int pmi_notifier(struct notifier_block *nb,
 				       unsigned long event, void *data)
 {
 	struct cpufreq_policy *policy = data;
-	struct cpufreq_frequency_table *cbe_freqs;
+	struct cpufreq_frequency_table *cbe_freqs = policy->freq_table;
 	u8 node;
 
 	/* Should this really be called for CPUFREQ_ADJUST and CPUFREQ_NOTIFY
 	 * policy events?)
 	 */
-	if (event == CPUFREQ_START)
-		return 0;
-
-	cbe_freqs = cpufreq_frequency_get_table(policy->cpu);
 	node = cbe_cpu_to_node(policy->cpu);
 
 	pr_debug("got notified, event=%lu, node=%u\n", event, node);

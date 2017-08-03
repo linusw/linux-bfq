@@ -60,7 +60,7 @@
  */
 
 #include <linux/init.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/list.h>
 #include <linux/hash.h>
 #include <linux/sched.h>
@@ -71,7 +71,7 @@
 
 #include <asm/cache.h>
 #include <asm/setup.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <asm/xen/page.h>
 #include <asm/xen/hypercall.h>

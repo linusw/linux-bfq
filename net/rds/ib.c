@@ -40,12 +40,13 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 
+#include "rds_single_path.h"
 #include "rds.h"
 #include "ib.h"
 #include "ib_mr.h"
 
-unsigned int rds_ib_mr_1m_pool_size = RDS_MR_1M_POOL_SIZE;
-unsigned int rds_ib_mr_8k_pool_size = RDS_MR_8K_POOL_SIZE;
+static unsigned int rds_ib_mr_1m_pool_size = RDS_MR_1M_POOL_SIZE;
+static unsigned int rds_ib_mr_8k_pool_size = RDS_MR_8K_POOL_SIZE;
 unsigned int rds_ib_retry_count = RDS_IB_DEFAULT_RETRY_COUNT;
 
 module_param(rds_ib_mr_1m_pool_size, int, 0444);
@@ -110,6 +111,8 @@ static void rds_ib_dev_free(struct work_struct *work)
 		kfree(i_ipaddr);
 	}
 
+	kfree(rds_ibdev->vector_load);
+
 	kfree(rds_ibdev);
 }
 
@@ -158,8 +161,16 @@ static void rds_ib_add_one(struct ib_device *device)
 	rds_ibdev->max_initiator_depth = device->attrs.max_qp_init_rd_atom;
 	rds_ibdev->max_responder_resources = device->attrs.max_qp_rd_atom;
 
+	rds_ibdev->vector_load = kzalloc(sizeof(int) * device->num_comp_vectors,
+					 GFP_KERNEL);
+	if (!rds_ibdev->vector_load) {
+		pr_err("RDS/IB: %s failed to allocate vector memory\n",
+			__func__);
+		goto put_dev;
+	}
+
 	rds_ibdev->dev = device;
-	rds_ibdev->pd = ib_alloc_pd(device);
+	rds_ibdev->pd = ib_alloc_pd(device, 0);
 	if (IS_ERR(rds_ibdev->pd)) {
 		rds_ibdev->pd = NULL;
 		goto put_dev;
@@ -380,15 +391,15 @@ void rds_ib_exit(void)
 
 struct rds_transport rds_ib_transport = {
 	.laddr_check		= rds_ib_laddr_check,
-	.xmit_complete		= rds_ib_xmit_complete,
+	.xmit_path_complete	= rds_ib_xmit_path_complete,
 	.xmit			= rds_ib_xmit,
 	.xmit_rdma		= rds_ib_xmit_rdma,
 	.xmit_atomic		= rds_ib_xmit_atomic,
-	.recv			= rds_ib_recv,
+	.recv_path		= rds_ib_recv_path,
 	.conn_alloc		= rds_ib_conn_alloc,
 	.conn_free		= rds_ib_conn_free,
-	.conn_connect		= rds_ib_conn_connect,
-	.conn_shutdown		= rds_ib_conn_shutdown,
+	.conn_path_connect	= rds_ib_conn_path_connect,
+	.conn_path_shutdown	= rds_ib_conn_path_shutdown,
 	.inc_copy_to_user	= rds_ib_inc_copy_to_user,
 	.inc_free		= rds_ib_inc_free,
 	.cm_initiate_connect	= rds_ib_cm_initiate_connect,
@@ -427,16 +438,12 @@ int rds_ib_init(void)
 	if (ret)
 		goto out_sysctl;
 
-	ret = rds_trans_register(&rds_ib_transport);
-	if (ret)
-		goto out_recv;
+	rds_trans_register(&rds_ib_transport);
 
 	rds_info_register_func(RDS_INFO_IB_CONNECTIONS, rds_ib_ic_info);
 
 	goto out;
 
-out_recv:
-	rds_ib_recv_exit();
 out_sysctl:
 	rds_ib_sysctl_exit();
 out_ibreg:

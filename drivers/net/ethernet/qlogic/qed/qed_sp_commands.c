@@ -1,9 +1,33 @@
 /* QLogic qed NIC Driver
- * Copyright (c) 2015 QLogic Corporation
+ * Copyright (c) 2015-2017  QLogic Corporation
  *
- * This software is available under the terms of the GNU General Public License
- * (GPL) Version 2, available from the file COPYING in the main directory of
- * this source tree.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and /or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include <linux/types.h>
@@ -25,9 +49,7 @@
 
 int qed_sp_init_request(struct qed_hwfn *p_hwfn,
 			struct qed_spq_entry **pp_ent,
-			u8 cmd,
-			u8 protocol,
-			struct qed_sp_init_data *p_data)
+			u8 cmd, u8 protocol, struct qed_sp_init_data *p_data)
 {
 	u32 opaque_cid = p_data->opaque_fid << 16 | p_data->cid;
 	struct qed_spq_entry *p_ent = NULL;
@@ -38,7 +60,7 @@ int qed_sp_init_request(struct qed_hwfn *p_hwfn,
 
 	rc = qed_spq_get_entry(p_hwfn, pp_ent);
 
-	if (rc != 0)
+	if (rc)
 		return rc;
 
 	p_ent = *pp_ent;
@@ -308,6 +330,7 @@ int qed_sp_pf_start(struct qed_hwfn *p_hwfn,
 	struct qed_spq_entry *p_ent = NULL;
 	struct qed_sp_init_data init_data;
 	int rc = -EINVAL;
+	u8 page_cnt;
 
 	/* update initial eq producer */
 	qed_eq_prod_update(p_hwfn,
@@ -320,8 +343,7 @@ int qed_sp_pf_start(struct qed_hwfn *p_hwfn,
 
 	rc = qed_sp_init_request(p_hwfn, &p_ent,
 				 COMMON_RAMROD_PF_START,
-				 PROTOCOLID_COMMON,
-				 &init_data);
+				 PROTOCOLID_COMMON, &init_data);
 	if (rc)
 		return rc;
 
@@ -332,7 +354,7 @@ int qed_sp_pf_start(struct qed_hwfn *p_hwfn,
 	p_ramrod->path_id		= QED_PATH_ID(p_hwfn);
 	p_ramrod->dont_log_ramrods	= 0;
 	p_ramrod->log_type_mask		= cpu_to_le16(0xf);
-	p_ramrod->mf_mode = mode;
+
 	switch (mode) {
 	case QED_MF_DEFAULT:
 	case QED_MF_NPAR:
@@ -349,18 +371,35 @@ int qed_sp_pf_start(struct qed_hwfn *p_hwfn,
 
 	/* Place EQ address in RAMROD */
 	DMA_REGPAIR_LE(p_ramrod->event_ring_pbl_addr,
-		       p_hwfn->p_eq->chain.pbl.p_phys_table);
-	p_ramrod->event_ring_num_pages = (u8)p_hwfn->p_eq->chain.page_cnt;
-
+		       p_hwfn->p_eq->chain.pbl_sp.p_phys_table);
+	page_cnt = (u8)qed_chain_get_page_cnt(&p_hwfn->p_eq->chain);
+	p_ramrod->event_ring_num_pages = page_cnt;
 	DMA_REGPAIR_LE(p_ramrod->consolid_q_pbl_addr,
-		       p_hwfn->p_consq->chain.pbl.p_phys_table);
+		       p_hwfn->p_consq->chain.pbl_sp.p_phys_table);
 
-	qed_tunn_set_pf_start_params(p_hwfn, p_tunn,
-				     &p_ramrod->tunnel_config);
-	p_hwfn->hw_info.personality = PERSONALITY_ETH;
+	qed_tunn_set_pf_start_params(p_hwfn, p_tunn, &p_ramrod->tunnel_config);
 
 	if (IS_MF_SI(p_hwfn))
 		p_ramrod->allow_npar_tx_switching = allow_npar_tx_switch;
+
+	switch (p_hwfn->hw_info.personality) {
+	case QED_PCI_ETH:
+		p_ramrod->personality = PERSONALITY_ETH;
+		break;
+	case QED_PCI_FCOE:
+		p_ramrod->personality = PERSONALITY_FCOE;
+		break;
+	case QED_PCI_ISCSI:
+		p_ramrod->personality = PERSONALITY_ISCSI;
+		break;
+	case QED_PCI_ETH_ROCE:
+		p_ramrod->personality = PERSONALITY_RDMA_AND_ETH;
+		break;
+	default:
+		DP_NOTICE(p_hwfn, "Unknown personality %d\n",
+			  p_hwfn->hw_info.personality);
+		p_ramrod->personality = PERSONALITY_ETH;
+	}
 
 	if (p_hwfn->cdev->p_iov_info) {
 		struct qed_hw_sriov_info *p_iov = p_hwfn->cdev->p_iov_info;
@@ -368,11 +407,12 @@ int qed_sp_pf_start(struct qed_hwfn *p_hwfn,
 		p_ramrod->base_vf_id = (u8) p_iov->first_vf_in_pf;
 		p_ramrod->num_vfs = (u8) p_iov->total_vfs;
 	}
+	p_ramrod->hsi_fp_ver.major_ver_arr[ETH_VER_KEY] = ETH_HSI_VER_MAJOR;
+	p_ramrod->hsi_fp_ver.minor_ver_arr[ETH_VER_KEY] = ETH_HSI_VER_MINOR;
 
 	DP_VERBOSE(p_hwfn, QED_MSG_SPQ,
 		   "Setting event_ring_sb [id %04x index %02x], outer_tag [%d]\n",
-		   sb, sb_index,
-		   p_ramrod->outer_tag);
+		   sb, sb_index, p_ramrod->outer_tag);
 
 	rc = qed_spq_post(p_hwfn, p_ent, NULL);
 

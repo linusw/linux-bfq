@@ -96,7 +96,7 @@ extern unsigned int HPAGE_SHIFT;
 extern phys_addr_t memstart_addr;
 extern phys_addr_t kernstart_addr;
 
-#ifdef CONFIG_RELOCATABLE_PPC32
+#if defined(CONFIG_RELOCATABLE) && defined(CONFIG_PPC32)
 extern long long virt_phys_offset;
 #endif
 
@@ -139,9 +139,9 @@ extern long long virt_phys_offset;
  * determine MEMORY_START until then.  However we can determine PHYSICAL_START
  * from information at hand (program counter, TLB lookup).
  *
- * On BookE with RELOCATABLE (RELOCATABLE_PPC32)
+ * On BookE with RELOCATABLE && PPC32
  *
- *   With RELOCATABLE_PPC32,  we support loading the kernel at any physical 
+ *   With RELOCATABLE && PPC32,  we support loading the kernel at any physical
  *   address without any restriction on the page alignment.
  *
  *   We find the runtime address of _stext and relocate ourselves based on 
@@ -230,7 +230,9 @@ extern long long virt_phys_offset;
  * and needs to be executable.  This means the whole heap ends
  * up being executable.
  */
-#define VM_DATA_DEFAULT_FLAGS32	(VM_READ | VM_WRITE | VM_EXEC | \
+#define VM_DATA_DEFAULT_FLAGS32 \
+	(((current->personality & READ_IMPLIES_EXEC) ? VM_EXEC : 0) | \
+				 VM_READ | VM_WRITE | \
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
 #define VM_DATA_DEFAULT_FLAGS64	(VM_READ | VM_WRITE | \
@@ -294,14 +296,11 @@ extern long long virt_phys_offset;
 #include <asm/pgtable-types.h>
 #endif
 
-typedef struct { signed long pd; } hugepd_t;
 
 #ifndef CONFIG_HUGETLB_PAGE
 #define is_hugepd(pdep)		(0)
 #define pgd_huge(pgd)		(0)
 #endif /* CONFIG_HUGETLB_PAGE */
-
-#define __hugepd(x) ((hugepd_t) { (x) })
 
 struct page;
 extern void clear_user_page(void *page, unsigned long vaddr, struct page *pg);

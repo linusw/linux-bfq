@@ -18,10 +18,6 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "cx231xx.h"
@@ -1570,10 +1566,12 @@ static int vidioc_s_ctrl(struct file *file, void *priv,
 {
 	struct cx231xx_fh  *fh  = file->private_data;
 	struct cx231xx *dev = fh->dev;
+	struct v4l2_subdev *sd;
 
 	dprintk(3, "enter vidioc_s_ctrl()\n");
 	/* Update the A/V core */
-	call_all(dev, core, s_ctrl, ctl);
+	v4l2_device_for_each_subdev(sd, &dev->v4l2_dev)
+		v4l2_s_ctrl(NULL, sd->ctrl_handler, ctl);
 	dprintk(3, "exit vidioc_s_ctrl()\n");
 	return 0;
 }

@@ -15,7 +15,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/bitops.h>
@@ -732,16 +731,23 @@ static void __iomem *byt_gpio_reg(struct byt_gpio *vg, unsigned int offset,
 				  int reg)
 {
 	struct byt_community *comm = byt_get_community(vg, offset);
-	u32 reg_offset = 0;
+	u32 reg_offset;
 
 	if (!comm)
 		return NULL;
 
 	offset -= comm->pin_base;
-	if (reg == BYT_INT_STAT_REG)
+	switch (reg) {
+	case BYT_INT_STAT_REG:
 		reg_offset = (offset / 32) * 4;
-	else
+		break;
+	case BYT_DEBOUNCE_REG:
+		reg_offset = 0;
+		break;
+	default:
 		reg_offset = comm->pad_map[offset] * 16;
+		break;
+	}
 
 	return comm->reg_base + reg_offset + reg;
 }
@@ -1093,6 +1099,7 @@ static int byt_pin_config_get(struct pinctrl_dev *pctl_dev, unsigned int offset,
 	enum pin_config_param param = pinconf_to_config_param(*config);
 	void __iomem *conf_reg = byt_gpio_reg(vg, offset, BYT_CONF0_REG);
 	void __iomem *val_reg = byt_gpio_reg(vg, offset, BYT_VAL_REG);
+	void __iomem *db_reg = byt_gpio_reg(vg, offset, BYT_DEBOUNCE_REG);
 	unsigned long flags;
 	u32 conf, pull, val, debounce;
 	u16 arg = 0;
@@ -1129,7 +1136,7 @@ static int byt_pin_config_get(struct pinctrl_dev *pctl_dev, unsigned int offset,
 			return -EINVAL;
 
 		raw_spin_lock_irqsave(&vg->lock, flags);
-		debounce = readl(byt_gpio_reg(vg, offset, BYT_DEBOUNCE_REG));
+		debounce = readl(db_reg);
 		raw_spin_unlock_irqrestore(&vg->lock, flags);
 
 		switch (debounce & BYT_DEBOUNCE_PULSE_MASK) {
@@ -1177,6 +1184,7 @@ static int byt_pin_config_set(struct pinctrl_dev *pctl_dev,
 	unsigned int param, arg;
 	void __iomem *conf_reg = byt_gpio_reg(vg, offset, BYT_CONF0_REG);
 	void __iomem *val_reg = byt_gpio_reg(vg, offset, BYT_VAL_REG);
+	void __iomem *db_reg = byt_gpio_reg(vg, offset, BYT_DEBOUNCE_REG);
 	unsigned long flags;
 	u32 conf, val, debounce;
 	int i, ret = 0;
@@ -1239,36 +1247,44 @@ static int byt_pin_config_set(struct pinctrl_dev *pctl_dev,
 
 			break;
 		case PIN_CONFIG_INPUT_DEBOUNCE:
-			debounce = readl(byt_gpio_reg(vg, offset,
-						      BYT_DEBOUNCE_REG));
-			conf &= ~BYT_DEBOUNCE_PULSE_MASK;
+			debounce = readl(db_reg);
+			debounce &= ~BYT_DEBOUNCE_PULSE_MASK;
+
+			if (arg)
+				conf |= BYT_DEBOUNCE_EN;
+			else
+				conf &= ~BYT_DEBOUNCE_EN;
 
 			switch (arg) {
 			case 375:
-				conf |= BYT_DEBOUNCE_PULSE_375US;
+				debounce |= BYT_DEBOUNCE_PULSE_375US;
 				break;
 			case 750:
-				conf |= BYT_DEBOUNCE_PULSE_750US;
+				debounce |= BYT_DEBOUNCE_PULSE_750US;
 				break;
 			case 1500:
-				conf |= BYT_DEBOUNCE_PULSE_1500US;
+				debounce |= BYT_DEBOUNCE_PULSE_1500US;
 				break;
 			case 3000:
-				conf |= BYT_DEBOUNCE_PULSE_3MS;
+				debounce |= BYT_DEBOUNCE_PULSE_3MS;
 				break;
 			case 6000:
-				conf |= BYT_DEBOUNCE_PULSE_6MS;
+				debounce |= BYT_DEBOUNCE_PULSE_6MS;
 				break;
 			case 12000:
-				conf |= BYT_DEBOUNCE_PULSE_12MS;
+				debounce |= BYT_DEBOUNCE_PULSE_12MS;
 				break;
 			case 24000:
-				conf |= BYT_DEBOUNCE_PULSE_24MS;
+				debounce |= BYT_DEBOUNCE_PULSE_24MS;
 				break;
 			default:
-				ret = -EINVAL;
+				if (arg)
+					ret = -EINVAL;
+				break;
 			}
 
+			if (!ret)
+				writel(debounce, db_reg);
 			break;
 		default:
 			ret = -ENOTSUPP;
@@ -1450,7 +1466,7 @@ static void byt_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 			   val & BYT_INPUT_EN ? "  " : "in",
 			   val & BYT_OUTPUT_EN ? "   " : "out",
 			   val & BYT_LEVEL ? "hi" : "lo",
-			   comm->pad_map[i], comm->pad_map[i] * 32,
+			   comm->pad_map[i], comm->pad_map[i] * 16,
 			   conf0 & 0x7,
 			   conf0 & BYT_TRIG_NEG ? " fall" : "     ",
 			   conf0 & BYT_TRIG_POS ? " rise" : "     ",
@@ -1607,7 +1623,9 @@ static void byt_gpio_irq_handler(struct irq_desc *desc)
 			continue;
 		}
 
+		raw_spin_lock(&vg->lock);
 		pending = readl(reg);
+		raw_spin_unlock(&vg->lock);
 		for_each_set_bit(pin, &pending, 32) {
 			virq = irq_find_mapping(vg->chip.irqdomain, base + pin);
 			generic_handle_irq(virq);
@@ -1618,6 +1636,8 @@ static void byt_gpio_irq_handler(struct irq_desc *desc)
 
 static void byt_gpio_irq_init_hw(struct byt_gpio *vg)
 {
+	struct gpio_chip *gc = &vg->chip;
+	struct device *dev = &vg->pdev->dev;
 	void __iomem *reg;
 	u32 base, value;
 	int i;
@@ -1639,10 +1659,12 @@ static void byt_gpio_irq_init_hw(struct byt_gpio *vg)
 		}
 
 		value = readl(reg);
-		if ((value & BYT_PIN_MUX) == byt_get_gpio_mux(vg, i) &&
-		    !(value & BYT_DIRECT_IRQ_EN)) {
+		if (value & BYT_DIRECT_IRQ_EN) {
+			clear_bit(i, gc->irq_valid_mask);
+			dev_dbg(dev, "excluding GPIO %d from IRQ domain\n", i);
+		} else if ((value & BYT_PIN_MUX) == byt_get_gpio_mux(vg, i)) {
 			byt_gpio_clear_triggering(vg, i);
-			dev_dbg(&vg->pdev->dev, "disabling GPIO %d\n", i);
+			dev_dbg(dev, "disabling GPIO %d\n", i);
 		}
 	}
 
@@ -1681,12 +1703,13 @@ static int byt_gpio_probe(struct byt_gpio *vg)
 	gc->can_sleep	= false;
 	gc->parent	= &vg->pdev->dev;
 	gc->ngpio	= vg->soc_data->npins;
+	gc->irq_need_valid_mask	= true;
 
 #ifdef CONFIG_PM_SLEEP
 	vg->saved_context = devm_kcalloc(&vg->pdev->dev, gc->ngpio,
 				       sizeof(*vg->saved_context), GFP_KERNEL);
 #endif
-	ret = gpiochip_add_data(gc, vg);
+	ret = devm_gpiochip_add_data(&vg->pdev->dev, gc, vg);
 	if (ret) {
 		dev_err(&vg->pdev->dev, "failed adding byt-gpio chip\n");
 		return ret;
@@ -1696,7 +1719,7 @@ static int byt_gpio_probe(struct byt_gpio *vg)
 				     0, 0, vg->soc_data->npins);
 	if (ret) {
 		dev_err(&vg->pdev->dev, "failed to add GPIO pin range\n");
-		goto fail;
+		return ret;
 	}
 
 	/* set up interrupts  */
@@ -1704,21 +1727,16 @@ static int byt_gpio_probe(struct byt_gpio *vg)
 	if (irq_rc && irq_rc->start) {
 		byt_gpio_irq_init_hw(vg);
 		ret = gpiochip_irqchip_add(gc, &byt_irqchip, 0,
-					   handle_simple_irq, IRQ_TYPE_NONE);
+					   handle_bad_irq, IRQ_TYPE_NONE);
 		if (ret) {
 			dev_err(&vg->pdev->dev, "failed to add irqchip\n");
-			goto fail;
+			return ret;
 		}
 
 		gpiochip_set_chained_irqchip(gc, &byt_irqchip,
 					     (unsigned)irq_rc->start,
 					     byt_gpio_irq_handler);
 	}
-
-	return ret;
-
-fail:
-	gpiochip_remove(&vg->chip);
 
 	return ret;
 }
@@ -1803,32 +1821,20 @@ static int byt_pinctrl_probe(struct platform_device *pdev)
 	vg->pctl_desc.pins	= vg->soc_data->pins;
 	vg->pctl_desc.npins	= vg->soc_data->npins;
 
-	vg->pctl_dev = pinctrl_register(&vg->pctl_desc, &pdev->dev, vg);
+	vg->pctl_dev = devm_pinctrl_register(&pdev->dev, &vg->pctl_desc, vg);
 	if (IS_ERR(vg->pctl_dev)) {
 		dev_err(&pdev->dev, "failed to register pinctrl driver\n");
 		return PTR_ERR(vg->pctl_dev);
 	}
 
+	raw_spin_lock_init(&vg->lock);
+
 	ret = byt_gpio_probe(vg);
-	if (ret) {
-		pinctrl_unregister(vg->pctl_dev);
+	if (ret)
 		return ret;
-	}
 
 	platform_set_drvdata(pdev, vg);
-	raw_spin_lock_init(&vg->lock);
 	pm_runtime_enable(&pdev->dev);
-
-	return 0;
-}
-
-static int byt_pinctrl_remove(struct platform_device *pdev)
-{
-	struct byt_gpio *vg = platform_get_drvdata(pdev);
-
-	pm_runtime_disable(&pdev->dev);
-	gpiochip_remove(&vg->chip);
-	pinctrl_unregister(vg->pctl_dev);
 
 	return 0;
 }
@@ -1930,10 +1936,11 @@ static const struct dev_pm_ops byt_gpio_pm_ops = {
 
 static struct platform_driver byt_gpio_driver = {
 	.probe          = byt_pinctrl_probe,
-	.remove         = byt_pinctrl_remove,
 	.driver         = {
-		.name   = "byt_gpio",
-		.pm	= &byt_gpio_pm_ops,
+		.name			= "byt_gpio",
+		.pm			= &byt_gpio_pm_ops,
+		.suppress_bind_attrs	= true,
+
 		.acpi_match_table = ACPI_PTR(byt_gpio_acpi_match),
 	},
 };
@@ -1943,9 +1950,3 @@ static int __init byt_gpio_init(void)
 	return platform_driver_register(&byt_gpio_driver);
 }
 subsys_initcall(byt_gpio_init);
-
-static void __exit byt_gpio_exit(void)
-{
-	platform_driver_unregister(&byt_gpio_driver);
-}
-module_exit(byt_gpio_exit);

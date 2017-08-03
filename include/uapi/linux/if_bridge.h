@@ -118,6 +118,7 @@ enum {
 	IFLA_BRIDGE_FLAGS,
 	IFLA_BRIDGE_MODE,
 	IFLA_BRIDGE_VLAN_INFO,
+	IFLA_BRIDGE_VLAN_TUNNEL_INFO,
 	__IFLA_BRIDGE_MAX,
 };
 #define IFLA_BRIDGE_MAX (__IFLA_BRIDGE_MAX - 1)
@@ -134,13 +135,23 @@ struct bridge_vlan_info {
 	__u16 vid;
 };
 
+enum {
+	IFLA_BRIDGE_VLAN_TUNNEL_UNSPEC,
+	IFLA_BRIDGE_VLAN_TUNNEL_ID,
+	IFLA_BRIDGE_VLAN_TUNNEL_VID,
+	IFLA_BRIDGE_VLAN_TUNNEL_FLAGS,
+	__IFLA_BRIDGE_VLAN_TUNNEL_MAX,
+};
+
+#define IFLA_BRIDGE_VLAN_TUNNEL_MAX (__IFLA_BRIDGE_VLAN_TUNNEL_MAX - 1)
+
 struct bridge_vlan_xstats {
 	__u64 rx_bytes;
 	__u64 rx_packets;
 	__u64 tx_bytes;
 	__u64 tx_packets;
 	__u16 vid;
-	__u16 pad1;
+	__u16 flags;
 	__u32 pad2;
 };
 
@@ -247,8 +258,37 @@ enum {
 enum {
 	BRIDGE_XSTATS_UNSPEC,
 	BRIDGE_XSTATS_VLAN,
+	BRIDGE_XSTATS_MCAST,
+	BRIDGE_XSTATS_PAD,
 	__BRIDGE_XSTATS_MAX
 };
 #define BRIDGE_XSTATS_MAX (__BRIDGE_XSTATS_MAX - 1)
 
+enum {
+	BR_MCAST_DIR_RX,
+	BR_MCAST_DIR_TX,
+	BR_MCAST_DIR_SIZE
+};
+
+/* IGMP/MLD statistics */
+struct br_mcast_stats {
+	__u64 igmp_v1queries[BR_MCAST_DIR_SIZE];
+	__u64 igmp_v2queries[BR_MCAST_DIR_SIZE];
+	__u64 igmp_v3queries[BR_MCAST_DIR_SIZE];
+	__u64 igmp_leaves[BR_MCAST_DIR_SIZE];
+	__u64 igmp_v1reports[BR_MCAST_DIR_SIZE];
+	__u64 igmp_v2reports[BR_MCAST_DIR_SIZE];
+	__u64 igmp_v3reports[BR_MCAST_DIR_SIZE];
+	__u64 igmp_parse_errors;
+
+	__u64 mld_v1queries[BR_MCAST_DIR_SIZE];
+	__u64 mld_v2queries[BR_MCAST_DIR_SIZE];
+	__u64 mld_leaves[BR_MCAST_DIR_SIZE];
+	__u64 mld_v1reports[BR_MCAST_DIR_SIZE];
+	__u64 mld_v2reports[BR_MCAST_DIR_SIZE];
+	__u64 mld_parse_errors;
+
+	__u64 mcast_bytes[BR_MCAST_DIR_SIZE];
+	__u64 mcast_packets[BR_MCAST_DIR_SIZE];
+};
 #endif /* _UAPI_LINUX_IF_BRIDGE_H */

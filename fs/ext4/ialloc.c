@@ -21,6 +21,8 @@
 #include <linux/random.h>
 #include <linux/bitops.h>
 #include <linux/blkdev.h>
+#include <linux/cred.h>
+
 #include <asm/byteorder.h>
 
 #include "ext4.h"
@@ -214,7 +216,7 @@ ext4_read_inode_bitmap(struct super_block *sb, ext4_group_t block_group)
 	trace_ext4_load_inode_bitmap(sb, block_group);
 	bh->b_end_io = ext4_end_bitmap_read;
 	get_bh(bh);
-	submit_bh(READ | REQ_META | REQ_PRIO, bh);
+	submit_bh(REQ_OP_READ, REQ_META | REQ_PRIO, bh);
 	wait_on_buffer(bh);
 	if (!buffer_uptodate(bh)) {
 		put_bh(bh);
@@ -764,14 +766,17 @@ struct inode *__ext4_new_inode(handle_t *handle, struct inode *dir,
 	if (!dir || !dir->i_nlink)
 		return ERR_PTR(-EPERM);
 
+	if (unlikely(ext4_forced_shutdown(EXT4_SB(dir->i_sb))))
+		return ERR_PTR(-EIO);
+
 	if ((ext4_encrypted_inode(dir) ||
 	     DUMMY_ENCRYPTION_ENABLED(EXT4_SB(dir->i_sb))) &&
 	    (S_ISREG(mode) || S_ISDIR(mode) || S_ISLNK(mode))) {
-		err = ext4_get_encryption_info(dir);
+		err = fscrypt_get_encryption_info(dir);
 		if (err)
 			return ERR_PTR(err);
-		if (ext4_encryption_info(dir) == NULL)
-			return ERR_PTR(-EPERM);
+		if (!fscrypt_has_encryption_key(dir))
+			return ERR_PTR(-ENOKEY);
 		if (!handle)
 			nblocks += EXT4_DATA_TRANS_BLOCKS(dir->i_sb);
 		encrypt = 1;
@@ -802,7 +807,7 @@ struct inode *__ext4_new_inode(handle_t *handle, struct inode *dir,
 	} else
 		inode_init_owner(inode, dir, mode);
 
-	if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_PROJECT) &&
+	if (ext4_has_feature_project(sb) &&
 	    ext4_test_inode_flag(dir, EXT4_INODE_PROJINHERIT))
 		ei->i_projid = EXT4_I(dir)->i_projid;
 	else
@@ -1039,7 +1044,7 @@ got:
 	/* This is the optimal IO size (for stat), not the fs block size */
 	inode->i_blocks = 0;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = ei->i_crtime =
-						       ext4_current_time(inode);
+						       current_time(inode);
 
 	memset(ei->i_data, 0, sizeof(ei->i_data));
 	ei->i_dir_start_lookup = 0;
@@ -1115,7 +1120,7 @@ got:
 	}
 
 	if (encrypt) {
-		err = ext4_inherit_context(dir, inode);
+		err = fscrypt_inherit_context(dir, inode, handle, true);
 		if (err)
 			goto fail_free_drop;
 	}

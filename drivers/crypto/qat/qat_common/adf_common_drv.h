@@ -87,8 +87,8 @@ enum adf_event {
 struct service_hndl {
 	int (*event_hld)(struct adf_accel_dev *accel_dev,
 			 enum adf_event event);
-	unsigned long init_status;
-	unsigned long start_status;
+	unsigned long init_status[ADF_DEVS_ARRAY_SIZE];
+	unsigned long start_status[ADF_DEVS_ARRAY_SIZE];
 	char *name;
 	struct list_head list;
 };
@@ -141,6 +141,8 @@ int adf_ae_stop(struct adf_accel_dev *accel_dev);
 
 int adf_enable_aer(struct adf_accel_dev *accel_dev, struct pci_driver *adf);
 void adf_disable_aer(struct adf_accel_dev *accel_dev);
+void adf_reset_sbr(struct adf_accel_dev *accel_dev);
+void adf_reset_flr(struct adf_accel_dev *accel_dev);
 void adf_dev_restore(struct adf_accel_dev *accel_dev);
 int adf_init_aer(void);
 void adf_exit_aer(void);

@@ -42,7 +42,6 @@
 
 /dts-v1/;
 
-#include <dt-bindings/input/input.h>
 #include "imx7d.dtsi"
 
 / {
@@ -392,7 +391,7 @@
 	pinctrl-0 = <&pinctrl_uart6>;
 	assigned-clocks = <&clks IMX7D_UART6_ROOT_SRC>;
 	assigned-clock-parents = <&clks IMX7D_PLL_SYS_MAIN_240M_CLK>;
-	fsl,uart-has-rtscts;
+	uart-has-rtscts;
 	status = "okay";
 };
 
@@ -713,33 +712,33 @@
 
 	pinctrl_hog_2: hoggrp-2 {
 		fsl,pins = <
-			MX7D_PAD_GPIO1_IO02__GPIO1_IO2		0x7d
-			MX7D_PAD_GPIO1_IO03__CCM_CLKO2		0x7d
+			MX7D_PAD_LPSR_GPIO1_IO02__GPIO1_IO2	0x7d
+			MX7D_PAD_LPSR_GPIO1_IO03__CCM_CLKO2	0x7d
 		>;
 	};
 
 	pinctrl_backlight_j9: backlightj9grp {
 		fsl,pins = <
-			MX7D_PAD_GPIO1_IO07__GPIO1_IO7		0x7d
+			MX7D_PAD_LPSR_GPIO1_IO07__GPIO1_IO7	0x7d
 		>;
 	};
 
 	pinctrl_pwm1: pwm1grp {
 		fsl,pins = <
-			MX7D_PAD_GPIO1_IO01__PWM1_OUT		0x7d
+			MX7D_PAD_LPSR_GPIO1_IO01__PWM1_OUT	0x7d
 		>;
 	};
 
 	pinctrl_usbotg1: usbotg1grp {
 		fsl,pins = <
-			MX7D_PAD_GPIO1_IO04__USB_OTG1_OC	0x7d
-			MX7D_PAD_GPIO1_IO05__GPIO1_IO5		0x14
+			MX7D_PAD_LPSR_GPIO1_IO04__USB_OTG1_OC	0x7d
+			MX7D_PAD_LPSR_GPIO1_IO05__GPIO1_IO5	0x14
 		>;
 	};
 
 	pinctrl_wdog1: wdog1grp {
 		fsl,pins = <
-			MX7D_PAD_GPIO1_IO00__WDOD1_WDOG_B	0x75
+			MX7D_PAD_LPSR_GPIO1_IO00__WDOD1_WDOG_B	0x75
 		>;
 	};
 };

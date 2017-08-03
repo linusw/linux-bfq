@@ -140,6 +140,7 @@ EXPORT_SYMBOL_GPL(ahci_shost_attrs);
 struct device_attribute *ahci_sdev_attrs[] = {
 	&dev_attr_sw_activity,
 	&dev_attr_unload_heads,
+	&dev_attr_ncq_prio_enable,
 	NULL
 };
 EXPORT_SYMBOL_GPL(ahci_sdev_attrs);
@@ -1518,8 +1519,8 @@ static int ahci_pmp_retry_softreset(struct ata_link *link, unsigned int *class,
 	return rc;
 }
 
-static int ahci_hardreset(struct ata_link *link, unsigned int *class,
-			  unsigned long deadline)
+int ahci_do_hardreset(struct ata_link *link, unsigned int *class,
+		      unsigned long deadline, bool *online)
 {
 	const unsigned long *timing = sata_ehc_deb_timing(&link->eh_context);
 	struct ata_port *ap = link->ap;
@@ -1527,7 +1528,6 @@ static int ahci_hardreset(struct ata_link *link, unsigned int *class,
 	struct ahci_host_priv *hpriv = ap->host->private_data;
 	u8 *d2h_fis = pp->rx_fis + RX_FIS_D2H_REG;
 	struct ata_taskfile tf;
-	bool online;
 	int rc;
 
 	DPRINTK("ENTER\n");
@@ -1539,16 +1539,25 @@ static int ahci_hardreset(struct ata_link *link, unsigned int *class,
 	tf.command = ATA_BUSY;
 	ata_tf_to_fis(&tf, 0, 0, d2h_fis);
 
-	rc = sata_link_hardreset(link, timing, deadline, &online,
+	rc = sata_link_hardreset(link, timing, deadline, online,
 				 ahci_check_ready);
 
 	hpriv->start_engine(ap);
 
-	if (online)
+	if (*online)
 		*class = ahci_dev_classify(ap);
 
 	DPRINTK("EXIT, rc=%d, class=%u\n", rc, *class);
 	return rc;
+}
+EXPORT_SYMBOL_GPL(ahci_do_hardreset);
+
+static int ahci_hardreset(struct ata_link *link, unsigned int *class,
+			  unsigned long deadline)
+{
+	bool online;
+
+	return ahci_do_hardreset(link, class, deadline, &online);
 }
 
 static void ahci_postreset(struct ata_link *link, unsigned int *class)
@@ -1975,7 +1984,7 @@ unsigned int ahci_qc_issue(struct ata_queued_cmd *qc)
 	 */
 	pp->active_link = qc->dev->link;
 
-	if (qc->tf.protocol == ATA_PROT_NCQ)
+	if (ata_is_ncq(qc->tf.protocol))
 		writel(1 << qc->tag, port_mmio + PORT_SCR_ACT);
 
 	if (pp->fbs_enabled && pp->fbs_last_dev != qc->dev->link->pmp) {
@@ -2392,12 +2401,20 @@ static int ahci_port_start(struct ata_port *ap)
 static void ahci_port_stop(struct ata_port *ap)
 {
 	const char *emsg = NULL;
+	struct ahci_host_priv *hpriv = ap->host->private_data;
+	void __iomem *host_mmio = hpriv->mmio;
 	int rc;
 
 	/* de-initialize port */
 	rc = ahci_deinit_port(ap, &emsg);
 	if (rc)
 		ata_port_warn(ap, "%s (%d)\n", emsg, rc);
+
+	/*
+	 * Clear GHC.IS to prevent stuck INTx after disabling MSI and
+	 * re-enabling INTx.
+	 */
+	writel(1 << ap->port_no, host_mmio + HOST_IRQ_STAT);
 }
 
 void ahci_print_info(struct ata_host *host, const char *scc_s)
@@ -2512,11 +2529,11 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host,
 	 */
 	for (i = 0; i < host->n_ports; i++) {
 		struct ahci_port_priv *pp = host->ports[i]->private_data;
-		int irq = ahci_irq_vector(hpriv, i);
+		int irq = hpriv->get_irq_vector(host, i);
 
 		/* Do not receive interrupts sent by dummy ports */
 		if (!pp) {
-			disable_irq(irq + i);
+			disable_irq(irq);
 			continue;
 		}
 
@@ -2548,10 +2565,15 @@ int ahci_host_activate(struct ata_host *host, struct scsi_host_template *sht)
 	int irq = hpriv->irq;
 	int rc;
 
-	if (hpriv->flags & (AHCI_HFLAG_MULTI_MSI | AHCI_HFLAG_MULTI_MSIX)) {
+	if (hpriv->flags & AHCI_HFLAG_MULTI_MSI) {
 		if (hpriv->irq_handler)
 			dev_warn(host->dev,
 			         "both AHCI_HFLAG_MULTI_MSI flag set and custom irq handler implemented\n");
+		if (!hpriv->get_irq_vector) {
+			dev_err(host->dev,
+				"AHCI_HFLAG_MULTI_MSI requires ->get_irq_vector!\n");
+			return -EIO;
+		}
 
 		rc = ahci_host_activate_multi_irqs(host, sht);
 	} else {

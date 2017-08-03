@@ -37,6 +37,7 @@ struct modversion_info {
 };
 
 struct module;
+struct exception_table_entry;
 
 struct module_kobject {
 	struct kobject kobj;
@@ -125,13 +126,13 @@ extern void cleanup_module(void);
 
 /* Each module must use one module_init(). */
 #define module_init(initfn)					\
-	static inline initcall_t __inittest(void)		\
+	static inline initcall_t __maybe_unused __inittest(void)		\
 	{ return initfn; }					\
 	int init_module(void) __attribute__((alias(#initfn)));
 
 /* This is only required if you want to be unloadable. */
 #define module_exit(exitfn)					\
-	static inline exitcall_t __exittest(void)		\
+	static inline exitcall_t __maybe_unused __exittest(void)		\
 	{ return exitfn; }					\
 	void cleanup_module(void) __attribute__((alias(#exitfn)));
 
@@ -154,18 +155,6 @@ extern void cleanup_module(void);
 #define __INITDATA_OR_MODULE __INITDATA
 #define __INITRODATA_OR_MODULE __INITRODATA
 #endif /*CONFIG_MODULES*/
-
-/* Archs provide a method of finding the correct exception table. */
-struct exception_table_entry;
-
-const struct exception_table_entry *
-search_extable(const struct exception_table_entry *first,
-	       const struct exception_table_entry *last,
-	       unsigned long value);
-void sort_extable(struct exception_table_entry *start,
-		  struct exception_table_entry *finish);
-void sort_main_extable(void);
-void trim_init_extable(struct module *m);
 
 /* Generic info of form tag = "info" */
 #define MODULE_INFO(tag, info) __MODULE_INFO(tag, tag, info)
@@ -268,9 +257,6 @@ extern const typeof(name) __mod_##type##__##name##_device_table		\
  * files require multiple MODULE_FIRMWARE() specifiers */
 #define MODULE_FIRMWARE(_firmware) MODULE_INFO(firmware, _firmware)
 
-/* Given an address, look for it in the exception tables */
-const struct exception_table_entry *search_exception_tables(unsigned long add);
-
 struct notifier_block;
 
 #ifdef CONFIG_MODULES
@@ -295,8 +281,6 @@ enum module_state {
 	MODULE_STATE_UNFORMED,	/* Still setting it up. */
 };
 
-struct module;
-
 struct mod_tree_node {
 	struct module *mod;
 	struct latch_tree_node node;
@@ -311,6 +295,8 @@ struct module_layout {
 	unsigned int text_size;
 	/* Size of RO section of the module (text+rodata) */
 	unsigned int ro_size;
+	/* Size of RO after init section */
+	unsigned int ro_after_init_size;
 
 #ifdef CONFIG_MODULES_TREE_LOOKUP
 	struct mod_tree_node mtn;
@@ -357,7 +343,7 @@ struct module {
 
 	/* Exported symbols */
 	const struct kernel_symbol *syms;
-	const unsigned long *crcs;
+	const s32 *crcs;
 	unsigned int num_syms;
 
 	/* Kernel parameters. */
@@ -370,18 +356,18 @@ struct module {
 	/* GPL-only exported symbols. */
 	unsigned int num_gpl_syms;
 	const struct kernel_symbol *gpl_syms;
-	const unsigned long *gpl_crcs;
+	const s32 *gpl_crcs;
 
 #ifdef CONFIG_UNUSED_SYMBOLS
 	/* unused exported symbols. */
 	const struct kernel_symbol *unused_syms;
-	const unsigned long *unused_crcs;
+	const s32 *unused_crcs;
 	unsigned int num_unused_syms;
 
 	/* GPL-only, unused exported symbols. */
 	unsigned int num_unused_gpl_syms;
 	const struct kernel_symbol *unused_gpl_syms;
-	const unsigned long *unused_gpl_crcs;
+	const s32 *unused_gpl_crcs;
 #endif
 
 #ifdef CONFIG_MODULE_SIG
@@ -393,7 +379,7 @@ struct module {
 
 	/* symbols that will be GPL-only in the near future. */
 	const struct kernel_symbol *gpl_future_syms;
-	const unsigned long *gpl_future_crcs;
+	const s32 *gpl_future_crcs;
 	unsigned int num_gpl_future_syms;
 
 	/* Exception table */
@@ -410,7 +396,7 @@ struct module {
 	/* Arch-specific module values */
 	struct mod_arch_specific arch;
 
-	unsigned int taints;	/* same bits as kernel:tainted */
+	unsigned long taints;	/* same bits as kernel:taint_flags */
 
 #ifdef CONFIG_GENERIC_BUG
 	/* Support for BUG */
@@ -423,7 +409,7 @@ struct module {
 	/* Protected by RCU and/or module_mutex: use rcu_dereference() */
 	struct mod_kallsyms *kallsyms;
 	struct mod_kallsyms core_kallsyms;
-	
+
 	/* Section attributes */
 	struct module_sect_attrs *sect_attrs;
 
@@ -534,7 +520,7 @@ struct module *find_module(const char *name);
 
 struct symsearch {
 	const struct kernel_symbol *start, *stop;
-	const unsigned long *crcs;
+	const s32 *crcs;
 	enum {
 		NOT_GPL_ONLY,
 		GPL_ONLY,
@@ -550,7 +536,7 @@ struct symsearch {
  */
 const struct kernel_symbol *find_symbol(const char *name,
 					struct module **owner,
-					const unsigned long **crc,
+					const s32 **crc,
 					bool gplok,
 					bool warn);
 
@@ -575,8 +561,8 @@ int module_kallsyms_on_each_symbol(int (*fn)(void *, const char *,
 					     struct module *, unsigned long),
 				   void *data);
 
-extern void __module_put_and_exit(struct module *mod, long code)
-	__attribute__((noreturn));
+extern void __noreturn __module_put_and_exit(struct module *mod,
+			long code);
 #define module_put_and_exit(code) __module_put_and_exit(THIS_MODULE, code)
 
 #ifdef CONFIG_MODULE_UNLOAD
@@ -630,9 +616,6 @@ const char *module_address_lookup(unsigned long addr,
 int lookup_module_symbol_name(unsigned long addr, char *symname);
 int lookup_module_symbol_attrs(unsigned long addr, unsigned long *size, unsigned long *offset, char *modname, char *name);
 
-/* For extable.c to search modules' exception tables. */
-const struct exception_table_entry *search_module_extables(unsigned long addr);
-
 int register_module_notifier(struct notifier_block *nb);
 int unregister_module_notifier(struct notifier_block *nb);
 
@@ -656,13 +639,6 @@ static inline bool is_livepatch_module(struct module *mod)
 #endif /* CONFIG_LIVEPATCH */
 
 #else /* !CONFIG_MODULES... */
-
-/* Given an address, look for it in the exception tables. */
-static inline const struct exception_table_entry *
-search_module_extables(unsigned long addr)
-{
-	return NULL;
-}
 
 static inline struct module *__module_address(unsigned long addr)
 {
@@ -785,15 +761,15 @@ extern int module_sysfs_initialized;
 
 #define __MODULE_STRING(x) __stringify(x)
 
-#ifdef CONFIG_DEBUG_SET_MODULE_RONX
+#ifdef CONFIG_STRICT_MODULE_RWX
 extern void set_all_modules_text_rw(void);
 extern void set_all_modules_text_ro(void);
-extern void module_enable_ro(const struct module *mod);
+extern void module_enable_ro(const struct module *mod, bool after_init);
 extern void module_disable_ro(const struct module *mod);
 #else
 static inline void set_all_modules_text_rw(void) { }
 static inline void set_all_modules_text_ro(void) { }
-static inline void module_enable_ro(const struct module *mod) { }
+static inline void module_enable_ro(const struct module *mod, bool after_init) { }
 static inline void module_disable_ro(const struct module *mod) { }
 #endif
 

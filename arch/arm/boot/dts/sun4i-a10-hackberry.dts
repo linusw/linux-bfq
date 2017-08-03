@@ -66,6 +66,7 @@
 		regulator-name = "emac-3v3";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
+		startup-delay-us = <20000>;
 		enable-active-high;
 		gpio = <&pio 7 19 GPIO_ACTIVE_HIGH>;
 	};
@@ -128,17 +129,13 @@
 	pinctrl-0 = <&hackberry_hogs>;
 
 	hackberry_hogs: hogs@0 {
-		allwinner,pins = "PH19";
-		allwinner,function = "gpio_out";
-		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+		pins = "PH19";
+		function = "gpio_out";
 	};
 
 	usb2_vbus_pin_hackberry: usb2_vbus_pin@0 {
-		allwinner,pins = "PH12";
-		allwinner,function = "gpio_out";
-		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+		pins = "PH12";
+		function = "gpio_out";
 	};
 };
 

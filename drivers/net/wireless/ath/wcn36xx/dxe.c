@@ -23,6 +23,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/interrupt.h>
+#include <linux/soc/qcom/smem_state.h>
 #include "wcn36xx.h"
 #include "txrx.h"
 
@@ -35,26 +36,27 @@ void *wcn36xx_dxe_get_next_bd(struct wcn36xx *wcn, bool is_low)
 	return ch->head_blk_ctl->bd_cpu_addr;
 }
 
+static void wcn36xx_ccu_write_register(struct wcn36xx *wcn, int addr, int data)
+{
+	wcn36xx_dbg(WCN36XX_DBG_DXE,
+		    "wcn36xx_ccu_write_register: addr=%x, data=%x\n",
+		    addr, data);
+
+	writel(data, wcn->ccu_base + addr);
+}
+
 static void wcn36xx_dxe_write_register(struct wcn36xx *wcn, int addr, int data)
 {
 	wcn36xx_dbg(WCN36XX_DBG_DXE,
 		    "wcn36xx_dxe_write_register: addr=%x, data=%x\n",
 		    addr, data);
 
-	writel(data, wcn->mmio + addr);
+	writel(data, wcn->dxe_base + addr);
 }
-
-#define wcn36xx_dxe_write_register_x(wcn, reg, reg_data)		 \
-do {									 \
-	if (wcn->chip_version == WCN36XX_CHIP_3680)			 \
-		wcn36xx_dxe_write_register(wcn, reg ## _3680, reg_data); \
-	else								 \
-		wcn36xx_dxe_write_register(wcn, reg ## _3660, reg_data); \
-} while (0)								 \
 
 static void wcn36xx_dxe_read_register(struct wcn36xx *wcn, int addr, int *data)
 {
-	*data = readl(wcn->mmio + addr);
+	*data = readl(wcn->dxe_base + addr);
 
 	wcn36xx_dbg(WCN36XX_DBG_DXE,
 		    "wcn36xx_dxe_read_register: addr=%x, data=%x\n",
@@ -150,9 +152,12 @@ int wcn36xx_dxe_alloc_ctl_blks(struct wcn36xx *wcn)
 		goto out_err;
 
 	/* Initialize SMSM state  Clear TX Enable RING EMPTY STATE */
-	ret = wcn->ctrl_ops->smsm_change_state(
-		WCN36XX_SMSM_WLAN_TX_ENABLE,
-		WCN36XX_SMSM_WLAN_TX_RINGS_EMPTY);
+	ret = qcom_smem_state_update_bits(wcn->tx_enable_state,
+					  WCN36XX_SMSM_WLAN_TX_ENABLE |
+					  WCN36XX_SMSM_WLAN_TX_RINGS_EMPTY,
+					  WCN36XX_SMSM_WLAN_TX_RINGS_EMPTY);
+	if (ret)
+		goto out_err;
 
 	return 0;
 
@@ -677,9 +682,9 @@ int wcn36xx_dxe_tx_frame(struct wcn36xx *wcn,
 	 * notify chip about new frame through SMSM bus.
 	 */
 	if (is_low &&  vif_priv->pw_state == WCN36XX_BMPS) {
-		wcn->ctrl_ops->smsm_change_state(
-				  0,
-				  WCN36XX_SMSM_WLAN_TX_ENABLE);
+		qcom_smem_state_update_bits(wcn->tx_rings_empty_state,
+					    WCN36XX_SMSM_WLAN_TX_ENABLE,
+					    WCN36XX_SMSM_WLAN_TX_ENABLE);
 	} else {
 		/* indicate End Of Packet and generate interrupt on descriptor
 		 * done.
@@ -701,9 +706,13 @@ int wcn36xx_dxe_init(struct wcn36xx *wcn)
 	reg_data = WCN36XX_DXE_REG_RESET;
 	wcn36xx_dxe_write_register(wcn, WCN36XX_DXE_REG_CSR_RESET, reg_data);
 
-	/* Setting interrupt path */
-	reg_data = WCN36XX_DXE_CCU_INT;
-	wcn36xx_dxe_write_register_x(wcn, WCN36XX_DXE_REG_CCU_INT, reg_data);
+	/* Select channels for rx avail and xfer done interrupts... */
+	reg_data = (WCN36XX_DXE_INT_CH3_MASK | WCN36XX_DXE_INT_CH1_MASK) << 16 |
+		    WCN36XX_DXE_INT_CH0_MASK | WCN36XX_DXE_INT_CH4_MASK;
+	if (wcn->is_pronto)
+		wcn36xx_ccu_write_register(wcn, WCN36XX_CCU_DXE_INT_SELECT_PRONTO, reg_data);
+	else
+		wcn36xx_ccu_write_register(wcn, WCN36XX_CCU_DXE_INT_SELECT_RIVA, reg_data);
 
 	/***************************************/
 	/* Init descriptors for TX LOW channel */

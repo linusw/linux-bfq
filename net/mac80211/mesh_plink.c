@@ -9,6 +9,8 @@
 #include <linux/gfp.h>
 #include <linux/kernel.h>
 #include <linux/random.h>
+#include <linux/rculist.h>
+
 #include "ieee80211_i.h"
 #include "rate.h"
 #include "mesh.h"
@@ -370,12 +372,20 @@ u32 mesh_plink_deactivate(struct sta_info *sta)
 
 	spin_lock_bh(&sta->mesh->plink_lock);
 	changed = __mesh_plink_deactivate(sta);
-	sta->mesh->reason = WLAN_REASON_MESH_PEER_CANCELED;
-	mesh_plink_frame_tx(sdata, sta, WLAN_SP_MESH_PEERING_CLOSE,
-			    sta->sta.addr, sta->mesh->llid, sta->mesh->plid,
-			    sta->mesh->reason);
+
+	if (!sdata->u.mesh.user_mpm) {
+		sta->mesh->reason = WLAN_REASON_MESH_PEER_CANCELED;
+		mesh_plink_frame_tx(sdata, sta, WLAN_SP_MESH_PEERING_CLOSE,
+				    sta->sta.addr, sta->mesh->llid,
+				    sta->mesh->plid, sta->mesh->reason);
+	}
 	spin_unlock_bh(&sta->mesh->plink_lock);
+	if (!sdata->u.mesh.user_mpm)
+		del_timer_sync(&sta->mesh->plink_timer);
 	mesh_path_flush_by_nexthop(sta);
+
+	/* make sure no readers can access nexthop sta from here on */
+	synchronize_net();
 
 	return changed;
 }
@@ -497,12 +507,14 @@ mesh_sta_info_alloc(struct ieee80211_sub_if_data *sdata, u8 *addr,
 
 	/* Userspace handles station allocation */
 	if (sdata->u.mesh.user_mpm ||
-	    sdata->u.mesh.security & IEEE80211_MESH_SEC_AUTHED)
-		cfg80211_notify_new_peer_candidate(sdata->dev, addr,
-						   elems->ie_start,
-						   elems->total_len,
-						   GFP_KERNEL);
-	else
+	    sdata->u.mesh.security & IEEE80211_MESH_SEC_AUTHED) {
+		if (mesh_peer_accepts_plinks(elems) &&
+		    mesh_plink_availables(sdata))
+			cfg80211_notify_new_peer_candidate(sdata->dev, addr,
+							   elems->ie_start,
+							   elems->total_len,
+							   GFP_KERNEL);
+	} else
 		sta = __mesh_sta_info_alloc(sdata, addr);
 
 	return sta;

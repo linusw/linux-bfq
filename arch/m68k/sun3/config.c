@@ -26,7 +26,6 @@
 #include <asm/pgalloc.h>
 #include <asm/sun3-head.h>
 #include <asm/sun3mmu.h>
-#include <asm/rtc.h>
 #include <asm/machdep.h>
 #include <asm/machines.h>
 #include <asm/idprom.h>
@@ -135,7 +134,7 @@ void __init config_sun3(void)
 {
 	unsigned long memory_start, memory_end;
 
-	printk("ARCH: SUN3\n");
+	pr_info("ARCH: SUN3\n");
 	idprom_init();
 
 	/* Subtract kernel memory from available memory */

@@ -71,7 +71,7 @@
 #include <net/inet_ecn.h>
 #include <net/sctp/sctp.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 static inline int sctp_v6_addr_match_len(union sctp_addr *s1,
 					 union sctp_addr *s2);
@@ -198,7 +198,7 @@ static void sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	}
 
 out_unlock:
-	sctp_err_finish(sk, asoc);
+	sctp_err_finish(sk, transport);
 out:
 	if (likely(idev != NULL))
 		in6_dev_put(idev);
@@ -222,7 +222,8 @@ static int sctp_v6_xmit(struct sk_buff *skb, struct sctp_transport *transport)
 	SCTP_INC_STATS(sock_net(sk), SCTP_MIB_OUTSCTPPACKS);
 
 	rcu_read_lock();
-	res = ip6_xmit(sk, skb, fl6, rcu_dereference(np->opt), np->tclass);
+	res = ip6_xmit(sk, skb, fl6, sk->sk_mark, rcu_dereference(np->opt),
+		       np->tclass);
 	rcu_read_unlock();
 	return res;
 }
@@ -412,21 +413,20 @@ static void sctp_v6_copy_addrlist(struct list_head *addrlist,
 static void sctp_v6_from_skb(union sctp_addr *addr, struct sk_buff *skb,
 			     int is_saddr)
 {
-	__be16 *port;
-	struct sctphdr *sh;
+	/* Always called on head skb, so this is safe */
+	struct sctphdr *sh = sctp_hdr(skb);
+	struct sockaddr_in6 *sa = &addr->v6;
 
-	port = &addr->v6.sin6_port;
 	addr->v6.sin6_family = AF_INET6;
 	addr->v6.sin6_flowinfo = 0; /* FIXME */
 	addr->v6.sin6_scope_id = ((struct inet6_skb_parm *)skb->cb)->iif;
 
-	sh = sctp_hdr(skb);
 	if (is_saddr) {
-		*port  = sh->source;
-		addr->v6.sin6_addr = ipv6_hdr(skb)->saddr;
+		sa->sin6_port = sh->source;
+		sa->sin6_addr = ipv6_hdr(skb)->saddr;
 	} else {
-		*port = sh->dest;
-		addr->v6.sin6_addr = ipv6_hdr(skb)->daddr;
+		sa->sin6_port = sh->dest;
+		sa->sin6_addr = ipv6_hdr(skb)->daddr;
 	}
 }
 
@@ -559,6 +559,7 @@ static int sctp_v6_is_any(const union sctp_addr *addr)
 static int sctp_v6_available(union sctp_addr *addr, struct sctp_sock *sp)
 {
 	int type;
+	struct net *net = sock_net(&sp->inet.sk);
 	const struct in6_addr *in6 = (const struct in6_addr *)&addr->v6.sin6_addr;
 
 	type = ipv6_addr_type(in6);
@@ -573,7 +574,8 @@ static int sctp_v6_available(union sctp_addr *addr, struct sctp_sock *sp)
 	if (!(type & IPV6_ADDR_UNICAST))
 		return 0;
 
-	return ipv6_chk_addr(sock_net(&sp->inet.sk), in6, NULL, 0);
+	return sp->inet.freebind || net->ipv6.sysctl.ip_nonlocal_bind ||
+		ipv6_chk_addr(net, in6, NULL, 0);
 }
 
 /* This function checks if the address is a valid address to be used for
@@ -638,14 +640,15 @@ static sctp_scope_t sctp_v6_scope(union sctp_addr *addr)
 
 /* Create and initialize a new sk for the socket to be returned by accept(). */
 static struct sock *sctp_v6_create_accept_sk(struct sock *sk,
-					     struct sctp_association *asoc)
+					     struct sctp_association *asoc,
+					     bool kern)
 {
 	struct sock *newsk;
 	struct ipv6_pinfo *newnp, *np = inet6_sk(sk);
 	struct sctp6_sock *newsctp6sk;
 	struct ipv6_txoptions *opt;
 
-	newsk = sk_alloc(sock_net(sk), PF_INET6, GFP_KERNEL, sk->sk_prot, 0);
+	newsk = sk_alloc(sock_net(sk), PF_INET6, GFP_KERNEL, sk->sk_prot, kern);
 	if (!newsk)
 		goto out;
 
@@ -710,8 +713,7 @@ static int sctp_v6_addr_to_user(struct sctp_sock *sp, union sctp_addr *addr)
 /* Where did this skb come from?  */
 static int sctp_v6_skb_iif(const struct sk_buff *skb)
 {
-	struct inet6_skb_parm *opt = (struct inet6_skb_parm *) skb->cb;
-	return opt->iif;
+	return IP6CB(skb)->iif;
 }
 
 /* Was this packet marked by Explicit Congestion Notification? */
@@ -780,15 +782,14 @@ static void sctp_inet6_skb_msgname(struct sk_buff *skb, char *msgname,
 	if (ip_hdr(skb)->version == 4) {
 		addr->v4.sin_family = AF_INET;
 		addr->v4.sin_port = sh->source;
-		addr->v4.sin_addr.s_addr =  ip_hdr(skb)->saddr;
+		addr->v4.sin_addr.s_addr = ip_hdr(skb)->saddr;
 	} else {
 		addr->v6.sin6_family = AF_INET6;
 		addr->v6.sin6_flowinfo = 0;
 		addr->v6.sin6_port = sh->source;
 		addr->v6.sin6_addr = ipv6_hdr(skb)->saddr;
 		if (ipv6_addr_type(&addr->v6.sin6_addr) & IPV6_ADDR_LINKLOCAL) {
-			struct sctp_ulpevent *ev = sctp_skb2event(skb);
-			addr->v6.sin6_scope_id = ev->iif;
+			addr->v6.sin6_scope_id = sctp_v6_skb_iif(skb);
 		}
 	}
 
@@ -955,7 +956,7 @@ static const struct proto_ops inet6_seqpacket_ops = {
 	.setsockopt	   = sock_common_setsockopt,
 	.getsockopt	   = sock_common_getsockopt,
 	.sendmsg	   = inet_sendmsg,
-	.recvmsg	   = sock_common_recvmsg,
+	.recvmsg	   = inet_recvmsg,
 	.mmap		   = sock_no_mmap,
 #ifdef CONFIG_COMPAT
 	.compat_setsockopt = compat_sock_common_setsockopt,

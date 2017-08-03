@@ -25,6 +25,7 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/mbus.h>
+#include <linux/mvebu-pmsu.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -38,7 +39,7 @@
 #include <asm/suspend.h>
 #include <asm/tlbflush.h>
 #include "common.h"
-
+#include "pmsu.h"
 
 #define PMSU_BASE_OFFSET    0x100
 #define PMSU_REG_SIZE	    0x1000
@@ -111,7 +112,7 @@ static const struct of_device_id of_pmsu_table[] = {
 
 void mvebu_pmsu_set_cpu_boot_addr(int hw_cpu, void *boot_addr)
 {
-	writel(virt_to_phys(boot_addr), pmsu_mp_base +
+	writel(__pa_symbol(boot_addr), pmsu_mp_base +
 		PMSU_BOOT_ADDR_REDIRECT_OFFSET(hw_cpu));
 }
 

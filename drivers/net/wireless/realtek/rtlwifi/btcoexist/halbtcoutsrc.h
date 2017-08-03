@@ -116,18 +116,6 @@ extern u32 btc_dbg_type[];
 #define		WIFI_P2P_GO_CONNECTED			BIT3
 #define		WIFI_P2P_GC_CONNECTED			BIT4
 
-#define	btc_alg_dbg(dbgflag, fmt, ...)					\
-do {									\
-	if (unlikely(btc_dbg_type[BTC_MSG_ALGORITHM] & dbgflag))	\
-		printk(KERN_DEBUG fmt, ##__VA_ARGS__);			\
-} while (0)
-#define	btc_iface_dbg(dbgflag, fmt, ...)				\
-do {									\
-	if (unlikely(btc_dbg_type[BTC_MSG_INTERFACE] & dbgflag))	\
-		printk(KERN_DEBUG fmt, ##__VA_ARGS__);			\
-} while (0)
-
-
 #define	BTC_RSSI_HIGH(_rssi_)	\
 	((_rssi_ == BTC_RSSI_STATE_HIGH ||	\
 	  _rssi_ == BTC_RSSI_STATE_STAY_HIGH) ? true : false)
@@ -228,6 +216,7 @@ enum btc_get_type {
 	BTC_GET_U4_WIFI_FW_VER,
 	BTC_GET_U4_WIFI_LINK_STATUS,
 	BTC_GET_U4_BT_PATCH_VER,
+	BTC_GET_U4_VENDOR,
 
 	/* type u1Byte */
 	BTC_GET_U1_WIFI_DOT11_CHNL,
@@ -243,6 +232,12 @@ enum btc_get_type {
 	/* for test mode */
 	BTC_GET_DRIVER_TEST_CFG,
 	BTC_GET_MAX
+};
+
+enum btc_vendor {
+	BTC_VENDOR_LENOVO,
+	BTC_VENDOR_ASUS,
+	BTC_VENDOR_OTHER
 };
 
 enum btc_set_type {
@@ -263,6 +258,7 @@ enum btc_set_type {
 	/* type trigger some action */
 	BTC_SET_ACT_GET_BT_RSSI,
 	BTC_SET_ACT_AGGREGATE_CTRL,
+	BTC_SET_ACT_ANTPOSREGRISTRY_CTRL,
 
 	/********* for 1Ant **********/
 	/* type bool */
@@ -433,7 +429,7 @@ struct btc_stack_info {
 	u8 num_of_hid;
 	bool pan_exist;
 	bool unknown_acl_exist;
-	char min_bt_rssi;
+	s8 min_bt_rssi;
 };
 
 struct btc_statistics {
@@ -537,7 +533,7 @@ void exhalbtc_dbg_control(struct btc_coexist *btcoexist, u8 code, u8 len,
 void exhalbtc_stack_update_profile_info(void);
 void exhalbtc_set_hci_version(u16 hci_version);
 void exhalbtc_set_bt_patch_version(u16 bt_hci_version, u16 bt_patch_version);
-void exhalbtc_update_min_bt_rssi(char bt_rssi);
+void exhalbtc_update_min_bt_rssi(s8 bt_rssi);
 void exhalbtc_set_bt_exist(bool bt_exist);
 void exhalbtc_set_chip_type(u8 chip_type);
 void exhalbtc_set_ant_num(struct rtl_priv *rtlpriv, u8 type, u8 ant_num);

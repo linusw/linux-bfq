@@ -1730,9 +1730,11 @@ static __initconst const u64 knl_hw_cache_extra_regs
  * disabled state if called consecutively.
  *
  * During consecutive calls, the same disable value will be written to related
- * registers, so the PMU state remains unchanged. hw.state in
- * intel_bts_disable_local will remain PERF_HES_STOPPED too in consecutive
- * calls.
+ * registers, so the PMU state remains unchanged.
+ *
+ * intel_bts events don't coexist with intel PMU's BTS events because of
+ * x86_add_exclusive(x86_lbr_exclusive_lbr); there's no need to keep them
+ * disabled around intel PMU's event batching etc, only inside the PMI handler.
  */
 static void __intel_pmu_disable_all(void)
 {
@@ -1742,8 +1744,6 @@ static void __intel_pmu_disable_all(void)
 
 	if (test_bit(INTEL_PMC_IDX_FIXED_BTS, cpuc->active_mask))
 		intel_pmu_disable_bts();
-	else
-		intel_bts_disable_local();
 
 	intel_pmu_pebs_disable_all();
 }
@@ -1771,8 +1771,7 @@ static void __intel_pmu_enable_all(int added, bool pmi)
 			return;
 
 		intel_pmu_enable_bts(event->hw.config);
-	} else
-		intel_bts_enable_local();
+	}
 }
 
 static void intel_pmu_enable_all(int added)
@@ -1907,13 +1906,6 @@ static void intel_pmu_disable_event(struct perf_event *event)
 	cpuc->intel_ctrl_host_mask &= ~(1ull << hwc->idx);
 	cpuc->intel_cp_status &= ~(1ull << hwc->idx);
 
-	/*
-	 * must disable before any actual event
-	 * because any event may be combined with LBR
-	 */
-	if (needs_branch_stack(event))
-		intel_pmu_lbr_disable(event);
-
 	if (unlikely(hwc->config_base == MSR_ARCH_PERFMON_FIXED_CTR_CTRL)) {
 		intel_pmu_disable_fixed(hwc);
 		return;
@@ -1923,6 +1915,14 @@ static void intel_pmu_disable_event(struct perf_event *event)
 
 	if (unlikely(event->attr.precise_ip))
 		intel_pmu_pebs_disable(event);
+}
+
+static void intel_pmu_del_event(struct perf_event *event)
+{
+	if (needs_branch_stack(event))
+		intel_pmu_lbr_del(event);
+	if (event->attr.precise_ip)
+		intel_pmu_pebs_del(event);
 }
 
 static void intel_pmu_enable_fixed(struct hw_perf_event *hwc)
@@ -1968,12 +1968,6 @@ static void intel_pmu_enable_event(struct perf_event *event)
 		intel_pmu_enable_bts(hwc->config);
 		return;
 	}
-	/*
-	 * must enabled before any actual event
-	 * because any event may be combined with LBR
-	 */
-	if (needs_branch_stack(event))
-		intel_pmu_lbr_enable(event);
 
 	if (event->attr.exclude_host)
 		cpuc->intel_ctrl_guest_mask |= (1ull << hwc->idx);
@@ -1992,6 +1986,14 @@ static void intel_pmu_enable_event(struct perf_event *event)
 		intel_pmu_pebs_enable(event);
 
 	__x86_pmu_enable_event(hwc, ARCH_PERFMON_EVENTSEL_ENABLE);
+}
+
+static void intel_pmu_add_event(struct perf_event *event)
+{
+	if (event->attr.precise_ip)
+		intel_pmu_pebs_add(event);
+	if (needs_branch_stack(event))
+		intel_pmu_lbr_add(event);
 }
 
 /*
@@ -2073,6 +2075,7 @@ static int intel_pmu_handle_irq(struct pt_regs *regs)
 	 */
 	if (!x86_pmu.late_ack)
 		apic_write(APIC_LVTPC, APIC_DM_NMI);
+	intel_bts_disable_local();
 	__intel_pmu_disable_all();
 	handled = intel_pmu_drain_bts_buffer();
 	handled += intel_bts_interrupt();
@@ -2107,6 +2110,27 @@ again:
 		    GLOBAL_STATUS_LBRS_FROZEN);
 	if (!status)
 		goto done;
+	/*
+	 * In case multiple PEBS events are sampled at the same time,
+	 * it is possible to have GLOBAL_STATUS bit 62 set indicating
+	 * PEBS buffer overflow and also seeing at most 3 PEBS counters
+	 * having their bits set in the status register. This is a sign
+	 * that there was at least one PEBS record pending at the time
+	 * of the PMU interrupt. PEBS counters must only be processed
+	 * via the drain_pebs() calls and not via the regular sample
+	 * processing loop coming after that the function, otherwise
+	 * phony regular samples may be generated in the sampling buffer
+	 * not marked with the EXACT tag. Another possibility is to have
+	 * one PEBS event and at least one non-PEBS event whic hoverflows
+	 * while PEBS has armed. In this case, bit 62 of GLOBAL_STATUS will
+	 * not be set, yet the overflow status bit for the PEBS counter will
+	 * be on Skylake.
+	 *
+	 * To avoid this problem, we systematically ignore the PEBS-enabled
+	 * counters from the GLOBAL_STATUS mask and we always process PEBS
+	 * events via drain_pebs().
+	 */
+	status &= ~cpuc->pebs_enabled;
 
 	/*
 	 * PEBS overflow sets bit 62 in the global status register
@@ -2114,15 +2138,6 @@ again:
 	if (__test_and_clear_bit(62, (unsigned long *)&status)) {
 		handled++;
 		x86_pmu.drain_pebs(regs);
-		/*
-		 * There are cases where, even though, the PEBS ovfl bit is set
-		 * in GLOBAL_OVF_STATUS, the PEBS events may also have their
-		 * overflow bits set for their counters. We must clear them
-		 * here because they have been processed as exact samples in
-		 * the drain_pebs() routine. They must not be processed again
-		 * in the for_each_bit_set() loop for regular samples below.
-		 */
-		status &= ~cpuc->pebs_enabled;
 		status &= x86_pmu.intel_ctrl | GLOBAL_STATUS_TRACE_TOPAPMI;
 	}
 
@@ -2172,6 +2187,7 @@ done:
 	/* Only restore PMU state when it's active. See x86_pmu_disable(). */
 	if (cpuc->enabled)
 		__intel_pmu_enable_all(0, true);
+	intel_bts_enable_local();
 
 	/*
 	 * Only unmask the NMI after the overflow counters
@@ -3109,7 +3125,7 @@ static int intel_pmu_cpu_prepare(int cpu)
 		cpuc->excl_thread_id = 0;
 	}
 
-	return NOTIFY_OK;
+	return 0;
 
 err_constraint_list:
 	kfree(cpuc->constraint_list);
@@ -3120,7 +3136,7 @@ err_shared_regs:
 	cpuc->shared_regs = NULL;
 
 err:
-	return NOTIFY_BAD;
+	return -ENOMEM;
 }
 
 static void intel_pmu_cpu_starting(int cpu)
@@ -3160,13 +3176,16 @@ static void intel_pmu_cpu_starting(int cpu)
 
 	if (x86_pmu.flags & PMU_FL_EXCL_CNTRS) {
 		for_each_cpu(i, topology_sibling_cpumask(cpu)) {
+			struct cpu_hw_events *sibling;
 			struct intel_excl_cntrs *c;
 
-			c = per_cpu(cpu_hw_events, i).excl_cntrs;
+			sibling = &per_cpu(cpu_hw_events, i);
+			c = sibling->excl_cntrs;
 			if (c && c->core_id == core_id) {
 				cpuc->kfree_on_online[1] = cpuc->excl_cntrs;
 				cpuc->excl_cntrs = c;
-				cpuc->excl_thread_id = 1;
+				if (!sibling->excl_thread_id)
+					cpuc->excl_thread_id = 1;
 				break;
 			}
 		}
@@ -3290,6 +3309,8 @@ static __initconst const struct x86_pmu intel_pmu = {
 	.enable_all		= intel_pmu_enable_all,
 	.enable			= intel_pmu_enable_event,
 	.disable		= intel_pmu_disable_event,
+	.add			= intel_pmu_add_event,
+	.del			= intel_pmu_del_event,
 	.hw_config		= intel_pmu_hw_config,
 	.schedule_events	= x86_schedule_events,
 	.eventsel		= MSR_ARCH_PERFMON_EVENTSEL0,
@@ -3601,10 +3622,14 @@ __init int intel_pmu_init(void)
 
 	/*
 	 * Quirk: v2 perfmon does not report fixed-purpose events, so
-	 * assume at least 3 events:
+	 * assume at least 3 events, when not running in a hypervisor:
 	 */
-	if (version > 1)
-		x86_pmu.num_counters_fixed = max((int)edx.split.num_counters_fixed, 3);
+	if (version > 1) {
+		int assume = 3 * !boot_cpu_has(X86_FEATURE_HYPERVISOR);
+
+		x86_pmu.num_counters_fixed =
+			max((int)edx.split.num_counters_fixed, assume);
+	}
 
 	if (boot_cpu_has(X86_FEATURE_PDCM)) {
 		u64 capabilities;
@@ -3892,6 +3917,7 @@ __init int intel_pmu_init(void)
 		break;
 
 	case INTEL_FAM6_XEON_PHI_KNL:
+	case INTEL_FAM6_XEON_PHI_KNM:
 		memcpy(hw_cache_event_ids,
 		       slm_hw_cache_event_ids, sizeof(hw_cache_event_ids));
 		memcpy(hw_cache_extra_regs,
@@ -3906,7 +3932,7 @@ __init int intel_pmu_init(void)
 		x86_pmu.flags |= PMU_FL_HAS_RSP_1;
 		x86_pmu.flags |= PMU_FL_NO_HT_SHARING;
 
-		pr_cont("Knights Landing events, ");
+		pr_cont("Knights Landing/Mill events, ");
 		break;
 
 	case INTEL_FAM6_SKYLAKE_MOBILE:
@@ -3964,7 +3990,7 @@ __init int intel_pmu_init(void)
 		     x86_pmu.num_counters, INTEL_PMC_MAX_GENERIC);
 		x86_pmu.num_counters = INTEL_PMC_MAX_GENERIC;
 	}
-	x86_pmu.intel_ctrl = (1 << x86_pmu.num_counters) - 1;
+	x86_pmu.intel_ctrl = (1ULL << x86_pmu.num_counters) - 1;
 
 	if (x86_pmu.num_counters_fixed > INTEL_PMC_MAX_FIXED) {
 		WARN(1, KERN_ERR "hw perf events fixed %d > max(%d), clipping!",
@@ -4023,7 +4049,7 @@ __init int intel_pmu_init(void)
 
 	/* Support full width counters using alternative MSR range */
 	if (x86_pmu.intel_cap.full_width_write) {
-		x86_pmu.max_period = x86_pmu.cntval_mask;
+		x86_pmu.max_period = x86_pmu.cntval_mask >> 1;
 		x86_pmu.perfctr = MSR_IA32_PMC0;
 		pr_cont("full-width counters, ");
 	}

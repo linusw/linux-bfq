@@ -18,11 +18,6 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
  */
 
 #include <linux/spinlock.h>
@@ -78,17 +73,15 @@ struct nvt_chip {
 };
 
 struct nvt_dev {
-	struct pnp_dev *pdev;
 	struct rc_dev *rdev;
 
-	spinlock_t nvt_lock;
+	spinlock_t lock;
 
 	/* for rx */
 	u8 buf[RX_BUF_LEN];
 	unsigned int pkts;
 
 	struct {
-		spinlock_t lock;
 		u8 buf[TX_BUF_LEN];
 		unsigned int buf_count;
 		unsigned int cur_buf_num;
@@ -104,7 +97,6 @@ struct nvt_dev {
 	unsigned long cir_addr;
 	unsigned long cir_wake_addr;
 	int cir_irq;
-	int cir_wake_irq;
 
 	enum nvt_chip_ver chip_ver;
 	/* hardware id */
@@ -112,35 +104,11 @@ struct nvt_dev {
 	u8 chip_minor;
 
 	/* hardware features */
-	bool hw_learning_capable;
 	bool hw_tx_capable;
 
-	/* rx settings */
-	bool learning_enabled;
-
-	/* track cir wake state */
-	u8 wake_state;
-	/* for study */
-	u8 study_state;
 	/* carrier period = 1 / frequency */
 	u32 carrier;
 };
-
-/* study states */
-#define ST_STUDY_NONE      0x0
-#define ST_STUDY_START     0x1
-#define ST_STUDY_CARRIER   0x2
-#define ST_STUDY_ALL_RECV  0x4
-
-/* wake states */
-#define ST_WAKE_NONE	0x0
-#define ST_WAKE_START	0x1
-#define ST_WAKE_FINISH	0x2
-
-/* receive states */
-#define ST_RX_WAIT_7F		0x1
-#define ST_RX_WAIT_HEAD		0x2
-#define ST_RX_WAIT_SILENT_END	0x4
 
 /* send states */
 #define ST_TX_NONE	0x0

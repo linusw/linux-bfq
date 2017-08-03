@@ -11,6 +11,10 @@
 #include <linux/gfp.h>
 #include <linux/smp.h>
 #include <linux/suspend.h>
+#include <linux/scatterlist.h>
+#include <linux/kdebug.h>
+
+#include <crypto/hash.h>
 
 #include <asm/init.h>
 #include <asm/proto.h>
@@ -37,11 +41,11 @@ unsigned long jump_address_phys;
  */
 unsigned long restore_cr3 __visible;
 
-pgd_t *temp_level4_pgt __visible;
+unsigned long temp_level4_pgt __visible;
 
 unsigned long relocated_restore_code __visible;
 
-static int set_up_temporary_text_mapping(void)
+static int set_up_temporary_text_mapping(pgd_t *pgd)
 {
 	pmd_t *pmd;
 	pud_t *pud;
@@ -71,7 +75,7 @@ static int set_up_temporary_text_mapping(void)
 		__pmd((jump_address_phys & PMD_MASK) | __PAGE_KERNEL_LARGE_EXEC));
 	set_pud(pud + pud_index(restore_jump_address),
 		__pud(__pa(pmd) | _KERNPG_TABLE));
-	set_pgd(temp_level4_pgt + pgd_index(restore_jump_address),
+	set_pgd(pgd + pgd_index(restore_jump_address),
 		__pgd(__pa(pud) | _KERNPG_TABLE));
 
 	return 0;
@@ -87,18 +91,19 @@ static int set_up_temporary_mappings(void)
 	struct x86_mapping_info info = {
 		.alloc_pgt_page	= alloc_pgt_page,
 		.pmd_flag	= __PAGE_KERNEL_LARGE_EXEC,
-		.kernel_mapping = true,
+		.offset		= __PAGE_OFFSET,
 	};
 	unsigned long mstart, mend;
+	pgd_t *pgd;
 	int result;
 	int i;
 
-	temp_level4_pgt = (pgd_t *)get_safe_page(GFP_ATOMIC);
-	if (!temp_level4_pgt)
+	pgd = (pgd_t *)get_safe_page(GFP_ATOMIC);
+	if (!pgd)
 		return -ENOMEM;
 
 	/* Prepare a temporary mapping for the kernel text */
-	result = set_up_temporary_text_mapping();
+	result = set_up_temporary_text_mapping(pgd);
 	if (result)
 		return result;
 
@@ -107,13 +112,12 @@ static int set_up_temporary_mappings(void)
 		mstart = pfn_mapped[i].start << PAGE_SHIFT;
 		mend   = pfn_mapped[i].end << PAGE_SHIFT;
 
-		result = kernel_ident_mapping_init(&info, temp_level4_pgt,
-						   mstart, mend);
-
+		result = kernel_ident_mapping_init(&info, pgd, mstart, mend);
 		if (result)
 			return result;
 	}
 
+	temp_level4_pgt = __pa(pgd);
 	return 0;
 }
 
@@ -177,14 +181,86 @@ int pfn_is_nosave(unsigned long pfn)
 	return (pfn >= nosave_begin_pfn) && (pfn < nosave_end_pfn);
 }
 
+#define MD5_DIGEST_SIZE 16
+
 struct restore_data_record {
 	unsigned long jump_address;
 	unsigned long jump_address_phys;
 	unsigned long cr3;
 	unsigned long magic;
+	u8 e820_digest[MD5_DIGEST_SIZE];
 };
 
-#define RESTORE_MAGIC	0x123456789ABCDEF0UL
+#define RESTORE_MAGIC	0x23456789ABCDEF01UL
+
+#if IS_BUILTIN(CONFIG_CRYPTO_MD5)
+/**
+ * get_e820_md5 - calculate md5 according to given e820 map
+ *
+ * @map: the e820 map to be calculated
+ * @buf: the md5 result to be stored to
+ */
+static int get_e820_md5(struct e820map *map, void *buf)
+{
+	struct scatterlist sg;
+	struct crypto_ahash *tfm;
+	int size;
+	int ret = 0;
+
+	tfm = crypto_alloc_ahash("md5", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(tfm))
+		return -ENOMEM;
+
+	{
+		AHASH_REQUEST_ON_STACK(req, tfm);
+		size = offsetof(struct e820map, map)
+			+ sizeof(struct e820entry) * map->nr_map;
+		ahash_request_set_tfm(req, tfm);
+		sg_init_one(&sg, (u8 *)map, size);
+		ahash_request_set_callback(req, 0, NULL, NULL);
+		ahash_request_set_crypt(req, &sg, buf, size);
+
+		if (crypto_ahash_digest(req))
+			ret = -EINVAL;
+		ahash_request_zero(req);
+	}
+	crypto_free_ahash(tfm);
+
+	return ret;
+}
+
+static void hibernation_e820_save(void *buf)
+{
+	get_e820_md5(e820_saved, buf);
+}
+
+static bool hibernation_e820_mismatch(void *buf)
+{
+	int ret;
+	u8 result[MD5_DIGEST_SIZE];
+
+	memset(result, 0, MD5_DIGEST_SIZE);
+	/* If there is no digest in suspend kernel, let it go. */
+	if (!memcmp(result, buf, MD5_DIGEST_SIZE))
+		return false;
+
+	ret = get_e820_md5(e820_saved, result);
+	if (ret)
+		return true;
+
+	return memcmp(result, buf, MD5_DIGEST_SIZE) ? true : false;
+}
+#else
+static void hibernation_e820_save(void *buf)
+{
+}
+
+static bool hibernation_e820_mismatch(void *buf)
+{
+	/* If md5 is not builtin for restore kernel, let it go. */
+	return false;
+}
+#endif
 
 /**
  *	arch_hibernation_header_save - populate the architecture specific part
@@ -201,6 +277,9 @@ int arch_hibernation_header_save(void *addr, unsigned int max_size)
 	rdr->jump_address_phys = __pa_symbol(&restore_registers);
 	rdr->cr3 = restore_cr3;
 	rdr->magic = RESTORE_MAGIC;
+
+	hibernation_e820_save(rdr->e820_digest);
+
 	return 0;
 }
 
@@ -216,5 +295,16 @@ int arch_hibernation_header_restore(void *addr)
 	restore_jump_address = rdr->jump_address;
 	jump_address_phys = rdr->jump_address_phys;
 	restore_cr3 = rdr->cr3;
-	return (rdr->magic == RESTORE_MAGIC) ? 0 : -EINVAL;
+
+	if (rdr->magic != RESTORE_MAGIC) {
+		pr_crit("Unrecognized hibernate image header format!\n");
+		return -EINVAL;
+	}
+
+	if (hibernation_e820_mismatch(rdr->e820_digest)) {
+		pr_crit("Hibernate inconsistent memory map detected!\n");
+		return -ENODEV;
+	}
+
+	return 0;
 }

@@ -26,11 +26,11 @@
 #include <linux/platform_data/wkup_m3.h>
 #include <linux/platform_data/pwm_omap_dmtimer.h>
 #include <linux/platform_data/media/ir-rx51.h>
+#include <linux/platform_data/asoc-ti-mcbsp.h>
 #include <plat/dmtimer.h>
 
 #include "common.h"
 #include "common-board-devices.h"
-#include "dss-common.h"
 #include "control.h"
 #include "omap_device.h"
 #include "omap-pm.h"
@@ -161,7 +161,7 @@ static struct ti_st_plat_data wilink7_pdata = {
 	.nshutdown_gpio = 162,
 	.dev_name = "/dev/ttyO1",
 	.flow_cntrl = 1,
-	.baud_rate = 300000,
+	.baud_rate = 3000000,
 };
 
 static struct platform_device wl128x_device = {
@@ -273,8 +273,6 @@ static struct platform_device omap3_rom_rng_device = {
 	},
 };
 
-static struct platform_device rx51_lirc_device;
-
 static void __init nokia_n900_legacy_init(void)
 {
 	hsmmc2_internal_input_clk();
@@ -293,10 +291,7 @@ static void __init nokia_n900_legacy_init(void)
 
 		pr_info("RX-51: Registering OMAP3 HWRNG device\n");
 		platform_device_register(&omap3_rom_rng_device);
-
 	}
-
-	platform_device_register(&rx51_lirc_device);
 }
 
 static void __init omap3_tao3530_legacy_init(void)
@@ -489,21 +484,27 @@ static struct pwm_omap_dmtimer_pdata pwm_dmtimer_pdata = {
 };
 #endif
 
-static struct lirc_rx51_platform_data __maybe_unused rx51_lirc_data = {
+static struct ir_rx51_platform_data __maybe_unused rx51_ir_data = {
 	.set_max_mpu_wakeup_lat = omap_pm_set_max_mpu_wakeup_lat,
-	.pwm_timer = 9, /* Use GPT 9 for CIR */
-#if IS_ENABLED(CONFIG_OMAP_DM_TIMER)
-	.dmtimer = &pwm_dmtimer_pdata,
-#endif
 };
 
-static struct platform_device __maybe_unused rx51_lirc_device = {
-	.name           = "lirc_rx51",
+static struct platform_device __maybe_unused rx51_ir_device = {
+	.name           = "ir_rx51",
 	.id             = -1,
 	.dev            = {
-		.platform_data = &rx51_lirc_data,
+		.platform_data = &rx51_ir_data,
 	},
 };
+
+#if IS_ENABLED(CONFIG_SND_OMAP_SOC_MCBSP)
+static struct omap_mcbsp_platform_data mcbsp_pdata;
+static void __init omap3_mcbsp_init(void)
+{
+	omap3_mcbsp_init_pdata_callback(&mcbsp_pdata);
+}
+#else
+static void __init omap3_mcbsp_init(void) {}
+#endif
 
 /*
  * Few boards still need auxdata populated before we populate
@@ -532,10 +533,16 @@ static struct of_dev_auxdata omap_auxdata_lookup[] __initdata = {
 		       &omap3_iommu_pdata),
 	OF_DEV_AUXDATA("ti,omap3-hsmmc", 0x4809c000, "4809c000.mmc", &mmc_pdata[0]),
 	OF_DEV_AUXDATA("ti,omap3-hsmmc", 0x480b4000, "480b4000.mmc", &mmc_pdata[1]),
+	OF_DEV_AUXDATA("nokia,n900-ir", 0, "n900-ir", &rx51_ir_data),
 	/* Only on am3517 */
 	OF_DEV_AUXDATA("ti,davinci_mdio", 0x5c030000, "davinci_mdio.0", NULL),
 	OF_DEV_AUXDATA("ti,am3517-emac", 0x5c000000, "davinci_emac.0",
 		       &am35xx_emac_pdata),
+	/* McBSP modules with sidetone core */
+#if IS_ENABLED(CONFIG_SND_OMAP_SOC_MCBSP)
+	OF_DEV_AUXDATA("ti,omap3-mcbsp", 0x49022000, "49022000.mcbsp", &mcbsp_pdata),
+	OF_DEV_AUXDATA("ti,omap3-mcbsp", 0x49024000, "49024000.mcbsp", &mcbsp_pdata),
+#endif
 #endif
 #ifdef CONFIG_SOC_AM33XX
 	OF_DEV_AUXDATA("ti,am3352-wkup-m3", 0x44d00000, "44d00000.wkup_m3",
@@ -592,7 +599,6 @@ static void pdata_quirks_check(struct pdata_init *quirks)
 		if (of_machine_is_compatible(quirks->compatible)) {
 			if (quirks->fn)
 				quirks->fn();
-			break;
 		}
 		quirks++;
 	}
@@ -608,6 +614,8 @@ void __init pdata_quirks_init(const struct of_device_id *omap_dt_match_table)
 	    of_machine_is_compatible("ti,omap3"))
 		omap_sdrc_init(NULL, NULL);
 
+	if (of_machine_is_compatible("ti,omap3"))
+		omap3_mcbsp_init();
 	pdata_quirks_check(auxdata_quirks);
 	of_platform_populate(NULL, omap_dt_match_table,
 			     omap_auxdata_lookup, NULL);

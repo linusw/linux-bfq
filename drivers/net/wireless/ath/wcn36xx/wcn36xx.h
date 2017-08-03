@@ -35,6 +35,9 @@
 /* How many frames until we start a-mpdu TX session */
 #define WCN36XX_AMPDU_START_THRESH	20
 
+#define WCN36XX_MAX_SCAN_SSIDS		9
+#define WCN36XX_MAX_SCAN_IE_LEN		500
+
 extern unsigned int wcn36xx_dbg_mask;
 
 enum wcn36xx_debug_mask {
@@ -101,19 +104,6 @@ static inline void buff_to_be(u32 *buf, size_t len)
 struct nv_data {
 	int	is_valid;
 	u8	table;
-};
-
-/* Interface for platform control path
- *
- * @open: hook must be called when wcn36xx wants to open control channel.
- * @tx: sends a buffer.
- */
-struct wcn36xx_platform_ctrl_ops {
-	int (*open)(void *drv_priv, void *rsp_cb);
-	void (*close)(void);
-	int (*tx)(char *buf, size_t len);
-	int (*get_hw_mac)(u8 *addr);
-	int (*smsm_change_state)(u32 clear_mask, u32 set_mask);
 };
 
 /**
@@ -193,7 +183,7 @@ struct wcn36xx {
 	u8			fw_minor;
 	u8			fw_major;
 	u32			fw_feat_caps[WCN36XX_HAL_CAPS_SIZE];
-	u32			chip_version;
+	bool			is_pronto;
 
 	/* extra byte for the NULL termination */
 	u8			crm_version[WCN36XX_HAL_VERSION_LENGTH + 1];
@@ -202,9 +192,16 @@ struct wcn36xx {
 	/* IRQs */
 	int			tx_irq;
 	int			rx_irq;
-	void __iomem		*mmio;
+	void __iomem		*ccu_base;
+	void __iomem		*dxe_base;
 
-	struct wcn36xx_platform_ctrl_ops *ctrl_ops;
+	struct qcom_smd_channel *smd_channel;
+
+	struct qcom_smem_state  *tx_enable_state;
+	unsigned		tx_enable_state_bit;
+	struct qcom_smem_state	*tx_rings_empty_state;
+	unsigned		tx_rings_empty_state_bit;
+
 	/*
 	 * smd_buf must be protected with smd_mutex to garantee
 	 * that all messages are sent one after another
@@ -215,8 +212,15 @@ struct wcn36xx {
 	struct completion	hal_rsp_compl;
 	struct workqueue_struct	*hal_ind_wq;
 	struct work_struct	hal_ind_work;
-	struct mutex		hal_ind_mutex;
+	spinlock_t		hal_ind_lock;
 	struct list_head	hal_ind_queue;
+
+	struct work_struct	scan_work;
+	struct cfg80211_scan_request *scan_req;
+	int			scan_freq;
+	int			scan_band;
+	struct mutex		scan_lock;
+	bool			scan_aborted;
 
 	/* DXE channels */
 	struct wcn36xx_dxe_ch	dxe_tx_l_ch;	/* TX low */
@@ -240,9 +244,6 @@ struct wcn36xx {
 #endif /* CONFIG_WCN36XX_DEBUGFS */
 
 };
-
-#define WCN36XX_CHIP_3660	0
-#define WCN36XX_CHIP_3680	1
 
 static inline bool wcn36xx_is_fw_version(struct wcn36xx *wcn,
 					 u8 major,

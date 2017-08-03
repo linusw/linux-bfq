@@ -671,7 +671,8 @@ static int vlan_ethtool_get_ts_info(struct net_device *dev,
 	return 0;
 }
 
-static struct rtnl_link_stats64 *vlan_dev_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
+static void vlan_dev_get_stats64(struct net_device *dev,
+				 struct rtnl_link_stats64 *stats)
 {
 	struct vlan_pcpu_stats *p;
 	u32 rx_errors = 0, tx_dropped = 0;
@@ -702,8 +703,6 @@ static struct rtnl_link_stats64 *vlan_dev_get_stats64(struct net_device *dev, st
 	}
 	stats->rx_errors  = rx_errors;
 	stats->tx_dropped = tx_dropped;
-
-	return stats;
 }
 
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -823,6 +822,9 @@ void vlan_setup(struct net_device *dev)
 	dev->netdev_ops		= &vlan_netdev_ops;
 	dev->destructor		= vlan_dev_free;
 	dev->ethtool_ops	= &vlan_ethtool_ops;
+
+	dev->min_mtu		= 0;
+	dev->max_mtu		= ETH_MAX_MTU;
 
 	eth_zero_addr(dev->broadcast);
 }

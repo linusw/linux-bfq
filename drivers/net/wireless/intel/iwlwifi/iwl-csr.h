@@ -145,8 +145,10 @@
 
 #define CSR_LED_REG             (CSR_BASE+0x094)
 #define CSR_DRAM_INT_TBL_REG	(CSR_BASE+0x0A0)
-#define CSR_MAC_SHADOW_REG_CTRL	(CSR_BASE+0x0A8) /* 6000 and up */
-
+#define CSR_MAC_SHADOW_REG_CTRL		(CSR_BASE + 0x0A8) /* 6000 and up */
+#define CSR_MAC_SHADOW_REG_CTRL_RX_WAKE	BIT(20)
+#define CSR_MAC_SHADOW_REG_CTL2		(CSR_BASE + 0x0AC)
+#define CSR_MAC_SHADOW_REG_CTL2_RX_WAKE	0xFFFF
 
 /* GIO Chicken Bits (PCI Express bus link power management) */
 #define CSR_GIO_CHICKEN_BITS    (CSR_BASE+0x100)
@@ -347,6 +349,7 @@ enum {
 /* RF_ID value */
 #define CSR_HW_RF_ID_TYPE_JF		(0x00105000)
 #define CSR_HW_RF_ID_TYPE_LC		(0x00101000)
+#define CSR_HW_RF_ID_TYPE_HR		(0x00109000)
 
 /* EEPROM REG */
 #define CSR_EEPROM_REG_READ_VALID_MSK	(0x00000001)
@@ -587,6 +590,8 @@ enum dtd_diode_reg {
  * Causes for the FH register interrupts
  */
 enum msix_fh_int_causes {
+	MSIX_FH_INT_CAUSES_Q0			= BIT(0),
+	MSIX_FH_INT_CAUSES_Q1			= BIT(1),
 	MSIX_FH_INT_CAUSES_D2S_CH0_NUM		= BIT(16),
 	MSIX_FH_INT_CAUSES_D2S_CH1_NUM		= BIT(17),
 	MSIX_FH_INT_CAUSES_S2D			= BIT(19),

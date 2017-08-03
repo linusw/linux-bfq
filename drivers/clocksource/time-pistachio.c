@@ -67,7 +67,7 @@ static inline void gpt_writel(void __iomem *base, u32 value, u32 offset,
 	writel(value, base + 0x20 * gpt_id + offset);
 }
 
-static cycle_t notrace
+static u64 notrace
 pistachio_clocksource_read_cycles(struct clocksource *cs)
 {
 	struct pistachio_clocksource *pcs = to_pistachio_clocksource(cs);
@@ -84,7 +84,7 @@ pistachio_clocksource_read_cycles(struct clocksource *cs)
 	counter = gpt_readl(pcs->base, TIMER_CURRENT_VALUE, 0);
 	raw_spin_unlock_irqrestore(&pcs->lock, flags);
 
-	return (cycle_t)~counter;
+	return (u64)~counter;
 }
 
 static u64 notrace pistachio_read_sched_clock(void)
@@ -202,10 +202,10 @@ static int __init pistachio_clksrc_of_init(struct device_node *node)
 	rate = clk_get_rate(fast_clk);
 
 	/* Disable irq's for clocksource usage */
-	gpt_writel(&pcs_gpt.base, 0, TIMER_IRQ_MASK, 0);
-	gpt_writel(&pcs_gpt.base, 0, TIMER_IRQ_MASK, 1);
-	gpt_writel(&pcs_gpt.base, 0, TIMER_IRQ_MASK, 2);
-	gpt_writel(&pcs_gpt.base, 0, TIMER_IRQ_MASK, 3);
+	gpt_writel(pcs_gpt.base, 0, TIMER_IRQ_MASK, 0);
+	gpt_writel(pcs_gpt.base, 0, TIMER_IRQ_MASK, 1);
+	gpt_writel(pcs_gpt.base, 0, TIMER_IRQ_MASK, 2);
+	gpt_writel(pcs_gpt.base, 0, TIMER_IRQ_MASK, 3);
 
 	/* Enable timer block */
 	writel(TIMER_ME_GLOBAL, pcs_gpt.base);

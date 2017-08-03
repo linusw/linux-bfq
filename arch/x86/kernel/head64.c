@@ -4,6 +4,7 @@
  *  Copyright (C) 2000 Andrea Arcangeli <andrea@suse.de> SuSE
  */
 
+#define DISABLE_BRANCH_PROFILING
 #include <linux/init.h>
 #include <linux/linkage.h>
 #include <linux/types.h>
@@ -183,7 +184,6 @@ void __init x86_64_start_reservations(char *real_mode_data)
 		copy_bootdata(__va(real_mode_data));
 
 	x86_early_init_platform_quirks();
-	reserve_bios_regions();
 
 	switch (boot_params.hdr.hardware_subarch) {
 	case X86_SUBARCH_INTEL_MID:

@@ -98,10 +98,11 @@ struct rtnl_link_ops {
 						   const struct net_device *dev,
 						   const struct net_device *slave_dev);
 	struct net		*(*get_link_net)(const struct net_device *dev);
-	size_t			(*get_linkxstats_size)(const struct net_device *dev);
+	size_t			(*get_linkxstats_size)(const struct net_device *dev,
+						       int attr);
 	int			(*fill_linkxstats)(struct sk_buff *skb,
 						   const struct net_device *dev,
-						   int *prividx);
+						   int *prividx, int attr);
 };
 
 int __rtnl_link_register(struct rtnl_link_ops *ops);
@@ -138,6 +139,10 @@ struct rtnl_af_ops {
 						    const struct nlattr *attr);
 	int			(*set_link_af)(struct net_device *dev,
 					       const struct nlattr *attr);
+
+	int			(*fill_stats_af)(struct sk_buff *skb,
+						 const struct net_device *dev);
+	size_t			(*get_stats_af_size)(const struct net_device *dev);
 };
 
 void __rtnl_af_unregister(struct rtnl_af_ops *ops);

@@ -27,6 +27,8 @@
 
 #include <linux/kernel.h>
 #include <linux/timer.h>
+#include <linux/sched/signal.h>
+#include <linux/mm_types.h>
 #include <linux/syscalls.h>
 #include <linux/ratelimit.h>
 
@@ -207,7 +209,7 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	 */
 	regs->orig_ax = syscall_nr;
 	regs->ax = -ENOSYS;
-	tmp = secure_computing();
+	tmp = secure_computing(NULL);
 	if ((!tmp && regs->orig_ax != syscall_nr) || regs->ip != address) {
 		warn_bad_vsyscall(KERN_DEBUG, regs,
 				  "seccomp tried to change syscall nr or ip");

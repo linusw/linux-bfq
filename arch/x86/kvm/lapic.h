@@ -15,11 +15,13 @@
 struct kvm_timer {
 	struct hrtimer timer;
 	s64 period; 				/* unit: ns */
+	ktime_t target_expiration;
 	u32 timer_mode;
 	u32 timer_mode_mask;
 	u64 tscdeadline;
 	u64 expired_tscdeadline;
 	atomic_t pending;			/* accumulated triggered timers */
+	bool hv_timer_in_use;
 };
 
 struct kvm_lapic {
@@ -69,8 +71,9 @@ int kvm_lapic_reg_read(struct kvm_lapic *apic, u32 offset, int len,
 bool kvm_apic_match_dest(struct kvm_vcpu *vcpu, struct kvm_lapic *source,
 			   int short_hand, unsigned int dest, int dest_mode);
 
-void __kvm_apic_update_irr(u32 *pir, void *regs);
-void kvm_apic_update_irr(struct kvm_vcpu *vcpu, u32 *pir);
+int __kvm_apic_update_irr(u32 *pir, void *regs);
+int kvm_apic_update_irr(struct kvm_vcpu *vcpu, u32 *pir);
+void kvm_apic_update_ppr(struct kvm_vcpu *vcpu);
 int kvm_apic_set_irq(struct kvm_vcpu *vcpu, struct kvm_lapic_irq *irq,
 		     struct dest_map *dest_map);
 int kvm_apic_local_deliver(struct kvm_lapic *apic, int lvt_type);
@@ -80,10 +83,11 @@ bool kvm_irq_delivery_to_apic_fast(struct kvm *kvm, struct kvm_lapic *src,
 
 u64 kvm_get_apic_base(struct kvm_vcpu *vcpu);
 int kvm_set_apic_base(struct kvm_vcpu *vcpu, struct msr_data *msr_info);
-void kvm_apic_post_state_restore(struct kvm_vcpu *vcpu,
-		struct kvm_lapic_state *s);
+int kvm_apic_get_state(struct kvm_vcpu *vcpu, struct kvm_lapic_state *s);
+int kvm_apic_set_state(struct kvm_vcpu *vcpu, struct kvm_lapic_state *s);
 int kvm_lapic_find_highest_irr(struct kvm_vcpu *vcpu);
 
+u64 kvm_get_lapic_target_expiration_tsc(struct kvm_vcpu *vcpu);
 u64 kvm_get_lapic_tscdeadline_msr(struct kvm_vcpu *vcpu);
 void kvm_set_lapic_tscdeadline_msr(struct kvm_vcpu *vcpu, u64 data);
 
@@ -107,6 +111,7 @@ static inline bool kvm_hv_vapic_assist_page_enabled(struct kvm_vcpu *vcpu)
 
 int kvm_lapic_enable_pv_eoi(struct kvm_vcpu *vcpu, u64 data);
 void kvm_lapic_init(void);
+void kvm_lapic_exit(void);
 
 #define VEC_POS(v) ((v) & (32 - 1))
 #define REG_POS(v) (((v) >> 5) << 4)
@@ -199,11 +204,6 @@ static inline int kvm_lapic_latched_init(struct kvm_vcpu *vcpu)
 	return lapic_in_kernel(vcpu) && test_bit(KVM_APIC_INIT, &vcpu->arch.apic->pending_events);
 }
 
-static inline int kvm_apic_id(struct kvm_lapic *apic)
-{
-	return (kvm_lapic_get_reg(apic, APIC_ID) >> 24) & 0xff;
-}
-
 bool kvm_apic_pending_eoi(struct kvm_vcpu *vcpu, int vector);
 
 void wait_lapic_expire(struct kvm_vcpu *vcpu);
@@ -212,4 +212,8 @@ bool kvm_intr_is_single_vcpu_fast(struct kvm *kvm, struct kvm_lapic_irq *irq,
 			struct kvm_vcpu **dest_vcpu);
 int kvm_vector_to_index(u32 vector, u32 dest_vcpus,
 			const unsigned long *bitmap, u32 bitmap_size);
+void kvm_lapic_switch_to_sw_timer(struct kvm_vcpu *vcpu);
+void kvm_lapic_switch_to_hv_timer(struct kvm_vcpu *vcpu);
+void kvm_lapic_expired_hv_timer(struct kvm_vcpu *vcpu);
+bool kvm_lapic_hv_timer_in_use(struct kvm_vcpu *vcpu);
 #endif

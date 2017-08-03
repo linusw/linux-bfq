@@ -40,11 +40,11 @@ enum {
 };
 
 #ifdef DEBUG
-extern u32 dbg_level;
+extern u32 tsi_dbg_level;
 
 #define tsi_debug(level, dev, fmt, arg...)				\
 	do {								\
-		if (DBG_##level & dbg_level)				\
+		if (DBG_##level & tsi_dbg_level)				\
 			dev_dbg(dev, "%s: " fmt "\n", __func__, ##arg);	\
 	} while (0)
 #else
@@ -661,7 +661,7 @@ enum dma_rtype {
  */
 #define TSI721_DMA_CHNUM	TSI721_DMA_MAXCH
 
-#define TSI721_DMACH_MAINT	0	/* DMA channel for maint requests */
+#define TSI721_DMACH_MAINT	7	/* DMA channel for maint requests */
 #define TSI721_DMACH_MAINT_NBD	32	/* Number of BDs for maint requests */
 
 #define TSI721_DMACH_DMA	1	/* DMA channel for data transfers */

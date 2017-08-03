@@ -35,7 +35,8 @@ static struct simplefb_format supported_formats[] = {
 static void arc_pgu_set_pxl_fmt(struct drm_crtc *crtc)
 {
 	struct arcpgu_drm_private *arcpgu = crtc_to_arcpgu_priv(crtc);
-	uint32_t pixel_format = crtc->primary->state->fb->pixel_format;
+	const struct drm_framebuffer *fb = crtc->primary->state->fb;
+	uint32_t pixel_format = fb->format->format;
 	struct simplefb_format *format = NULL;
 	int i;
 
@@ -145,20 +146,14 @@ static int arc_pgu_crtc_atomic_check(struct drm_crtc *crtc,
 static void arc_pgu_crtc_atomic_begin(struct drm_crtc *crtc,
 				      struct drm_crtc_state *state)
 {
-	struct arcpgu_drm_private *arcpgu = crtc_to_arcpgu_priv(crtc);
-	unsigned long flags;
+	struct drm_pending_vblank_event *event = crtc->state->event;
 
-	if (crtc->state->event) {
-		struct drm_pending_vblank_event *event = crtc->state->event;
-
+	if (event) {
 		crtc->state->event = NULL;
-		event->pipe = drm_crtc_index(crtc);
 
-		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
-
-		spin_lock_irqsave(&crtc->dev->event_lock, flags);
-		list_add_tail(&event->base.link, &arcpgu->event_list);
-		spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+		spin_lock_irq(&crtc->dev->event_lock);
+		drm_crtc_send_vblank_event(crtc, event);
+		spin_unlock_irq(&crtc->dev->event_lock);
 	}
 }
 
@@ -189,8 +184,6 @@ static void arc_pgu_plane_atomic_update(struct drm_plane *plane,
 }
 
 static const struct drm_plane_helper_funcs arc_pgu_plane_helper_funcs = {
-	.prepare_fb = NULL,
-	.cleanup_fb = NULL,
 	.atomic_update = arc_pgu_plane_atomic_update,
 };
 

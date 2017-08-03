@@ -70,6 +70,7 @@ struct pfuze_chip {
 	struct device *dev;
 	struct pfuze_regulator regulator_descs[PFUZE100_MAX_REGULATOR];
 	struct regulator_dev *regulators[PFUZE100_MAX_REGULATOR];
+	struct pfuze_regulator *pfuze_regulators;
 };
 
 static const int pfuze100_swbst[] = {
@@ -125,7 +126,7 @@ static int pfuze100_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
 	return ret;
 }
 
-static struct regulator_ops pfuze100_ldo_regulator_ops = {
+static const struct regulator_ops pfuze100_ldo_regulator_ops = {
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
@@ -134,14 +135,14 @@ static struct regulator_ops pfuze100_ldo_regulator_ops = {
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 };
 
-static struct regulator_ops pfuze100_fixed_regulator_ops = {
+static const struct regulator_ops pfuze100_fixed_regulator_ops = {
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
 	.list_voltage = regulator_list_voltage_linear,
 };
 
-static struct regulator_ops pfuze100_sw_regulator_ops = {
+static const struct regulator_ops pfuze100_sw_regulator_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
@@ -149,7 +150,7 @@ static struct regulator_ops pfuze100_sw_regulator_ops = {
 	.set_ramp_delay = pfuze100_set_ramp_delay,
 };
 
-static struct regulator_ops pfuze100_swb_regulator_ops = {
+static const struct regulator_ops pfuze100_swb_regulator_ops = {
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
 	.list_voltage = regulator_list_voltage_table,
@@ -333,8 +334,6 @@ static struct pfuze_regulator pfuze3000_regulators[] = {
 	PFUZE100_VGEN_REG(PFUZE3000, VLDO3, PFUZE100_VGEN5VOL, 1800000, 3300000, 100000),
 	PFUZE100_VGEN_REG(PFUZE3000, VLDO4, PFUZE100_VGEN6VOL, 1800000, 3300000, 100000),
 };
-
-static struct pfuze_regulator *pfuze_regulators;
 
 #ifdef CONFIG_OF
 /* PFUZE100 */
@@ -563,21 +562,21 @@ static int pfuze100_regulator_probe(struct i2c_client *client,
 	/* use the right regulators after identify the right device */
 	switch (pfuze_chip->chip_id) {
 	case PFUZE3000:
-		pfuze_regulators = pfuze3000_regulators;
+		pfuze_chip->pfuze_regulators = pfuze3000_regulators;
 		regulator_num = ARRAY_SIZE(pfuze3000_regulators);
 		sw_check_start = PFUZE3000_SW2;
 		sw_check_end = PFUZE3000_SW2;
 		sw_hi = 1 << 3;
 		break;
 	case PFUZE200:
-		pfuze_regulators = pfuze200_regulators;
+		pfuze_chip->pfuze_regulators = pfuze200_regulators;
 		regulator_num = ARRAY_SIZE(pfuze200_regulators);
 		sw_check_start = PFUZE200_SW2;
 		sw_check_end = PFUZE200_SW3B;
 		break;
 	case PFUZE100:
 	default:
-		pfuze_regulators = pfuze100_regulators;
+		pfuze_chip->pfuze_regulators = pfuze100_regulators;
 		regulator_num = ARRAY_SIZE(pfuze100_regulators);
 		sw_check_start = PFUZE100_SW2;
 		sw_check_end = PFUZE100_SW4;
@@ -587,7 +586,7 @@ static int pfuze100_regulator_probe(struct i2c_client *client,
 		(pfuze_chip->chip_id == PFUZE100) ? "100" :
 		((pfuze_chip->chip_id == PFUZE200) ? "200" : "3000"));
 
-	memcpy(pfuze_chip->regulator_descs, pfuze_regulators,
+	memcpy(pfuze_chip->regulator_descs, pfuze_chip->pfuze_regulators,
 		sizeof(pfuze_chip->regulator_descs));
 
 	ret = pfuze_parse_regulators_dt(pfuze_chip);
@@ -631,7 +630,7 @@ static int pfuze100_regulator_probe(struct i2c_client *client,
 			devm_regulator_register(&client->dev, desc, &config);
 		if (IS_ERR(pfuze_chip->regulators[i])) {
 			dev_err(&client->dev, "register regulator%s failed\n",
-				pfuze_regulators[i].desc.name);
+				pfuze_chip->pfuze_regulators[i].desc.name);
 			return PTR_ERR(pfuze_chip->regulators[i]);
 		}
 	}
@@ -650,5 +649,5 @@ static struct i2c_driver pfuze_driver = {
 module_i2c_driver(pfuze_driver);
 
 MODULE_AUTHOR("Robin Gong <b38343@freescale.com>");
-MODULE_DESCRIPTION("Regulator Driver for Freescale PFUZE100/PFUZE200 PMIC");
+MODULE_DESCRIPTION("Regulator Driver for Freescale PFUZE100/200/3000 PMIC");
 MODULE_LICENSE("GPL v2");

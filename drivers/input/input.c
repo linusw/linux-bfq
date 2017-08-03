@@ -153,8 +153,6 @@ static void input_pass_values(struct input_dev *dev,
 
 	rcu_read_unlock();
 
-	add_input_randomness(vals->type, vals->code, vals->value);
-
 	/* trigger auto repeat for key events */
 	if (test_bit(EV_REP, dev->evbit) && test_bit(EV_KEY, dev->evbit)) {
 		for (v = vals; v != vals + count; v++) {
@@ -371,9 +369,10 @@ static int input_get_disposition(struct input_dev *dev,
 static void input_handle_event(struct input_dev *dev,
 			       unsigned int type, unsigned int code, int value)
 {
-	int disposition;
+	int disposition = input_get_disposition(dev, type, code, &value);
 
-	disposition = input_get_disposition(dev, type, code, &value);
+	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+		add_input_randomness(type, code, value);
 
 	if ((disposition & INPUT_PASS_TO_DEVICE) && dev->event)
 		dev->event(dev, type, code, value);
@@ -1750,7 +1749,7 @@ static const struct dev_pm_ops input_dev_pm_ops = {
 };
 #endif /* CONFIG_PM */
 
-static struct device_type input_dev_type = {
+static const struct device_type input_dev_type = {
 	.groups		= input_dev_attr_groups,
 	.release	= input_dev_release,
 	.uevent		= input_dev_uevent,
@@ -2091,6 +2090,12 @@ int input_register_device(struct input_dev *dev)
 	unsigned int packet_size;
 	const char *path;
 	int error;
+
+	if (test_bit(EV_ABS, dev->evbit) && !dev->absinfo) {
+		dev_err(&dev->dev,
+			"Absolute device without dev->absinfo, refusing to register\n");
+		return -EINVAL;
+	}
 
 	if (dev->devres_managed) {
 		devres = devres_alloc(devm_input_device_unregister,

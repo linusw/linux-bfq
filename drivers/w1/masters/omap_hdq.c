@@ -390,8 +390,6 @@ static int hdq_read_byte(struct hdq_data *hdq_data, u8 *val)
 		goto out;
 	}
 
-	hdq_data->hdq_irqstatus = 0;
-
 	if (!(hdq_data->hdq_irqstatus & OMAP_HDQ_INT_STATUS_RXCOMPLETE)) {
 		hdq_reg_merge(hdq_data, OMAP_HDQ_CTRL_STATUS,
 			OMAP_HDQ_CTRL_STATUS_DIR | OMAP_HDQ_CTRL_STATUS_GO,
@@ -717,7 +715,7 @@ static int omap_hdq_probe(struct platform_device *pdev)
 	ret = _omap_hdq_reset(hdq_data);
 	if (ret) {
 		dev_dbg(&pdev->dev, "reset failed\n");
-		return -EINVAL;
+		goto err_irq;
 	}
 
 	rev = hdq_reg_in(hdq_data, OMAP_HDQ_REVISION);

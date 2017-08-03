@@ -71,7 +71,7 @@ int ceph_fscache_register_fs(struct ceph_fs_client* fsc)
 					      &ceph_fscache_fsid_object_def,
 					      fsc, true);
 	if (!fsc->fscache)
-		pr_err("Unable to resgister fsid: %p fscache cookie", fsc);
+		pr_err("Unable to register fsid: %p fscache cookie\n", fsc);
 
 	return 0;
 }
@@ -234,7 +234,7 @@ void ceph_fscache_file_set_cookie(struct inode *inode, struct file *filp)
 		fscache_enable_cookie(ci->fscache, ceph_fscache_can_enable,
 				inode);
 		if (fscache_cookie_enabled(ci->fscache)) {
-			dout("fscache_file_set_cookie %p %p enabing cache\n",
+			dout("fscache_file_set_cookie %p %p enabling cache\n",
 			     inode, filp);
 		}
 	}

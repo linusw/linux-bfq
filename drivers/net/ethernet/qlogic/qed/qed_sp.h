@@ -1,9 +1,33 @@
 /* QLogic qed NIC Driver
- * Copyright (c) 2015 QLogic Corporation
+ * Copyright (c) 2015-2017  QLogic Corporation
  *
- * This software is available under the terms of the GNU General Public License
- * (GPL) Version 2, available from the file COPYING in the main directory of
- * this source tree.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and /or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef _QED_SP_H
@@ -61,7 +85,41 @@ union ramrod_data {
 	struct vport_start_ramrod_data vport_start;
 	struct vport_stop_ramrod_data vport_stop;
 	struct vport_update_ramrod_data vport_update;
+	struct core_rx_start_ramrod_data core_rx_queue_start;
+	struct core_rx_stop_ramrod_data core_rx_queue_stop;
+	struct core_tx_start_ramrod_data core_tx_queue_start;
+	struct core_tx_stop_ramrod_data core_tx_queue_stop;
 	struct vport_filter_update_ramrod_data vport_filter_update;
+
+	struct rdma_init_func_ramrod_data rdma_init_func;
+	struct rdma_close_func_ramrod_data rdma_close_func;
+	struct rdma_register_tid_ramrod_data rdma_register_tid;
+	struct rdma_deregister_tid_ramrod_data rdma_deregister_tid;
+	struct roce_create_qp_resp_ramrod_data roce_create_qp_resp;
+	struct roce_create_qp_req_ramrod_data roce_create_qp_req;
+	struct roce_modify_qp_resp_ramrod_data roce_modify_qp_resp;
+	struct roce_modify_qp_req_ramrod_data roce_modify_qp_req;
+	struct roce_query_qp_resp_ramrod_data roce_query_qp_resp;
+	struct roce_query_qp_req_ramrod_data roce_query_qp_req;
+	struct roce_destroy_qp_resp_ramrod_data roce_destroy_qp_resp;
+	struct roce_destroy_qp_req_ramrod_data roce_destroy_qp_req;
+	struct rdma_create_cq_ramrod_data rdma_create_cq;
+	struct rdma_destroy_cq_ramrod_data rdma_destroy_cq;
+	struct rdma_srq_create_ramrod_data rdma_create_srq;
+	struct rdma_srq_destroy_ramrod_data rdma_destroy_srq;
+	struct rdma_srq_modify_ramrod_data rdma_modify_srq;
+	struct roce_init_func_ramrod_data roce_init_func;
+	struct fcoe_init_ramrod_params fcoe_init;
+	struct fcoe_conn_offload_ramrod_params fcoe_conn_ofld;
+	struct fcoe_conn_terminate_ramrod_params fcoe_conn_terminate;
+	struct fcoe_stat_ramrod_params fcoe_stat;
+
+	struct iscsi_slow_path_hdr iscsi_empty;
+	struct iscsi_init_ramrod_params iscsi_init;
+	struct iscsi_spe_func_dstry iscsi_destroy;
+	struct iscsi_spe_conn_offload iscsi_conn_offload;
+	struct iscsi_conn_update_ramrod_params iscsi_conn_update;
+	struct iscsi_spe_conn_termination iscsi_conn_terminate;
 
 	struct vf_start_ramrod_data vf_start;
 	struct vf_stop_ramrod_data vf_stop;
@@ -80,8 +138,8 @@ union qed_spq_req_comp {
 };
 
 struct qed_spq_comp_done {
-	u64	done;
-	u8	fw_return_code;
+	unsigned int	done;
+	u8		fw_return_code;
 };
 
 struct qed_spq_entry {

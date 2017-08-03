@@ -79,8 +79,8 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 		slot = (hash & htab_hash_mask) * HPTES_PER_GROUP;
 		slot += (old_pte & H_PAGE_F_GIX) >> H_PAGE_F_GIX_SHIFT;
 
-		if (ppc_md.hpte_updatepp(slot, rflags, vpn, mmu_psize,
-					 mmu_psize, ssize, flags) == -1)
+		if (mmu_hash_ops.hpte_updatepp(slot, rflags, vpn, mmu_psize,
+					       mmu_psize, ssize, flags) == -1)
 			old_pte &= ~_PAGE_HPTEFLAGS;
 	}
 
@@ -116,21 +116,3 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 	*ptep = __pte(new_pte & ~H_PAGE_BUSY);
 	return 0;
 }
-
-#if defined(CONFIG_PPC_64K_PAGES) && defined(CONFIG_DEBUG_VM)
-/*
- * This enables us to catch the wrong page directory format
- * Moved here so that we can use WARN() in the call.
- */
-int hugepd_ok(hugepd_t hpd)
-{
-	bool is_hugepd;
-
-	/*
-	 * We should not find this format in page directory, warn otherwise.
-	 */
-	is_hugepd = (((hpd.pd & 0x3) == 0x0) && ((hpd.pd & HUGEPD_SHIFT_MASK) != 0));
-	WARN(is_hugepd, "Found wrong page directory format\n");
-	return 0;
-}
-#endif

@@ -41,8 +41,10 @@ void vgic_v3_process_maintenance(struct kvm_vcpu *vcpu)
 
 			WARN_ON(cpuif->vgic_lr[lr] & ICH_LR_STATE);
 
-			kvm_notify_acked_irq(vcpu->kvm, 0,
-					     intid - VGIC_NR_PRIVATE_IRQS);
+			/* Only SPIs require notification */
+			if (vgic_valid_spi(vcpu->kvm, intid))
+				kvm_notify_acked_irq(vcpu->kvm, 0,
+						     intid - VGIC_NR_PRIVATE_IRQS);
 		}
 
 		/*
@@ -81,6 +83,8 @@ void vgic_v3_fold_lr_state(struct kvm_vcpu *vcpu)
 		else
 			intid = val & GICH_LR_VIRTUALID;
 		irq = vgic_get_irq(vcpu->kvm, vcpu, intid);
+		if (!irq)	/* An LPI could have been unmapped. */
+			continue;
 
 		spin_lock(&irq->irq_lock);
 
@@ -90,7 +94,7 @@ void vgic_v3_fold_lr_state(struct kvm_vcpu *vcpu)
 		/* Edge is the only case where we preserve the pending bit */
 		if (irq->config == VGIC_CONFIG_EDGE &&
 		    (val & ICH_LR_PENDING_BIT)) {
-			irq->pending = true;
+			irq->pending_latch = true;
 
 			if (vgic_irq_is_sgi(intid) &&
 			    model == KVM_DEV_TYPE_ARM_VGIC_V2) {
@@ -107,12 +111,11 @@ void vgic_v3_fold_lr_state(struct kvm_vcpu *vcpu)
 		 */
 		if (irq->config == VGIC_CONFIG_LEVEL) {
 			if (!(val & ICH_LR_PENDING_BIT))
-				irq->soft_pending = false;
-
-			irq->pending = irq->line_level || irq->soft_pending;
+				irq->pending_latch = false;
 		}
 
 		spin_unlock(&irq->irq_lock);
+		vgic_put_irq(vcpu->kvm, irq);
 	}
 }
 
@@ -122,11 +125,11 @@ void vgic_v3_populate_lr(struct kvm_vcpu *vcpu, struct vgic_irq *irq, int lr)
 	u32 model = vcpu->kvm->arch.vgic.vgic_model;
 	u64 val = irq->intid;
 
-	if (irq->pending) {
+	if (irq_is_pending(irq)) {
 		val |= ICH_LR_PENDING_BIT;
 
 		if (irq->config == VGIC_CONFIG_EDGE)
-			irq->pending = false;
+			irq->pending_latch = false;
 
 		if (vgic_irq_is_sgi(irq->intid) &&
 		    model == KVM_DEV_TYPE_ARM_VGIC_V2) {
@@ -136,7 +139,7 @@ void vgic_v3_populate_lr(struct kvm_vcpu *vcpu, struct vgic_irq *irq, int lr)
 			val |= (src - 1) << GICH_LR_PHYSID_CPUID_SHIFT;
 			irq->source &= ~(1 << (src - 1));
 			if (irq->source)
-				irq->pending = true;
+				irq->pending_latch = true;
 		}
 	}
 
@@ -172,10 +175,18 @@ void vgic_v3_set_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 {
 	u32 vmcr;
 
-	vmcr  = (vmcrp->ctlr << ICH_VMCR_CTLR_SHIFT) & ICH_VMCR_CTLR_MASK;
+	/*
+	 * Ignore the FIQen bit, because GIC emulation always implies
+	 * SRE=1 which means the vFIQEn bit is also RES1.
+	 */
+	vmcr = ((vmcrp->ctlr >> ICC_CTLR_EL1_EOImode_SHIFT) <<
+		 ICH_VMCR_EOIM_SHIFT) & ICH_VMCR_EOIM_MASK;
+	vmcr |= (vmcrp->ctlr << ICH_VMCR_CBPR_SHIFT) & ICH_VMCR_CBPR_MASK;
 	vmcr |= (vmcrp->abpr << ICH_VMCR_BPR1_SHIFT) & ICH_VMCR_BPR1_MASK;
 	vmcr |= (vmcrp->bpr << ICH_VMCR_BPR0_SHIFT) & ICH_VMCR_BPR0_MASK;
 	vmcr |= (vmcrp->pmr << ICH_VMCR_PMR_SHIFT) & ICH_VMCR_PMR_MASK;
+	vmcr |= (vmcrp->grpen0 << ICH_VMCR_ENG0_SHIFT) & ICH_VMCR_ENG0_MASK;
+	vmcr |= (vmcrp->grpen1 << ICH_VMCR_ENG1_SHIFT) & ICH_VMCR_ENG1_MASK;
 
 	vcpu->arch.vgic_cpu.vgic_v3.vgic_vmcr = vmcr;
 }
@@ -184,11 +195,24 @@ void vgic_v3_get_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 {
 	u32 vmcr = vcpu->arch.vgic_cpu.vgic_v3.vgic_vmcr;
 
-	vmcrp->ctlr = (vmcr & ICH_VMCR_CTLR_MASK) >> ICH_VMCR_CTLR_SHIFT;
+	/*
+	 * Ignore the FIQen bit, because GIC emulation always implies
+	 * SRE=1 which means the vFIQEn bit is also RES1.
+	 */
+	vmcrp->ctlr = ((vmcr >> ICH_VMCR_EOIM_SHIFT) <<
+			ICC_CTLR_EL1_EOImode_SHIFT) & ICC_CTLR_EL1_EOImode_MASK;
+	vmcrp->ctlr |= (vmcr & ICH_VMCR_CBPR_MASK) >> ICH_VMCR_CBPR_SHIFT;
 	vmcrp->abpr = (vmcr & ICH_VMCR_BPR1_MASK) >> ICH_VMCR_BPR1_SHIFT;
 	vmcrp->bpr  = (vmcr & ICH_VMCR_BPR0_MASK) >> ICH_VMCR_BPR0_SHIFT;
 	vmcrp->pmr  = (vmcr & ICH_VMCR_PMR_MASK) >> ICH_VMCR_PMR_SHIFT;
+	vmcrp->grpen0 = (vmcr & ICH_VMCR_ENG0_MASK) >> ICH_VMCR_ENG0_SHIFT;
+	vmcrp->grpen1 = (vmcr & ICH_VMCR_ENG1_MASK) >> ICH_VMCR_ENG1_SHIFT;
 }
+
+#define INITIAL_PENDBASER_VALUE						  \
+	(GIC_BASER_CACHEABILITY(GICR_PENDBASER, INNER, RaWb)		| \
+	GIC_BASER_CACHEABILITY(GICR_PENDBASER, OUTER, SameAsInner)	| \
+	GIC_BASER_SHAREABILITY(GICR_PENDBASER, InnerShareable))
 
 void vgic_v3_enable(struct kvm_vcpu *vcpu)
 {
@@ -205,12 +229,24 @@ void vgic_v3_enable(struct kvm_vcpu *vcpu)
 	/*
 	 * If we are emulating a GICv3, we do it in an non-GICv2-compatible
 	 * way, so we force SRE to 1 to demonstrate this to the guest.
+	 * Also, we don't support any form of IRQ/FIQ bypass.
 	 * This goes with the spec allowing the value to be RAO/WI.
 	 */
-	if (vcpu->kvm->arch.vgic.vgic_model == KVM_DEV_TYPE_ARM_VGIC_V3)
-		vgic_v3->vgic_sre = ICC_SRE_EL1_SRE;
-	else
+	if (vcpu->kvm->arch.vgic.vgic_model == KVM_DEV_TYPE_ARM_VGIC_V3) {
+		vgic_v3->vgic_sre = (ICC_SRE_EL1_DIB |
+				     ICC_SRE_EL1_DFB |
+				     ICC_SRE_EL1_SRE);
+		vcpu->arch.vgic_cpu.pendbaser = INITIAL_PENDBASER_VALUE;
+	} else {
 		vgic_v3->vgic_sre = 0;
+	}
+
+	vcpu->arch.vgic_cpu.num_id_bits = (kvm_vgic_global_state.ich_vtr_el2 &
+					   ICH_VTR_ID_BITS_MASK) >>
+					   ICH_VTR_ID_BITS_SHIFT;
+	vcpu->arch.vgic_cpu.num_pri_bits = ((kvm_vgic_global_state.ich_vtr_el2 &
+					    ICH_VTR_PRI_BITS_MASK) >>
+					    ICH_VTR_PRI_BITS_SHIFT) + 1;
 
 	/* Get the show on the road... */
 	vgic_v3->vgic_hcr = ICH_HCR_EN;
@@ -279,11 +315,17 @@ int vgic_v3_map_resources(struct kvm *kvm)
 		goto out;
 	}
 
+	if (vgic_has_its(kvm)) {
+		ret = vgic_register_its_iodevs(kvm);
+		if (ret) {
+			kvm_err("Unable to register VGIC ITS MMIO regions\n");
+			goto out;
+		}
+	}
+
 	dist->ready = true;
 
 out:
-	if (ret)
-		kvm_vgic_destroy(kvm);
 	return ret;
 }
 
@@ -296,6 +338,7 @@ out:
 int vgic_v3_probe(const struct gic_kvm_info *info)
 {
 	u32 ich_vtr_el2 = kvm_call_hyp(__vgic_v3_get_ich_vtr_el2);
+	int ret;
 
 	/*
 	 * The ListRegs field is 5 bits, but there is a architectural
@@ -303,6 +346,7 @@ int vgic_v3_probe(const struct gic_kvm_info *info)
 	 */
 	kvm_vgic_global_state.nr_lr = (ich_vtr_el2 & 0xf) + 1;
 	kvm_vgic_global_state.can_emulate_gicv2 = false;
+	kvm_vgic_global_state.ich_vtr_el2 = ich_vtr_el2;
 
 	if (!info->vcpu.start) {
 		kvm_info("GICv3: no GICV resource entry\n");
@@ -319,12 +363,22 @@ int vgic_v3_probe(const struct gic_kvm_info *info)
 	} else {
 		kvm_vgic_global_state.vcpu_base = info->vcpu.start;
 		kvm_vgic_global_state.can_emulate_gicv2 = true;
-		kvm_register_vgic_device(KVM_DEV_TYPE_ARM_VGIC_V2);
+		ret = kvm_register_vgic_device(KVM_DEV_TYPE_ARM_VGIC_V2);
+		if (ret) {
+			kvm_err("Cannot register GICv2 KVM device.\n");
+			return ret;
+		}
 		kvm_info("vgic-v2@%llx\n", info->vcpu.start);
 	}
+	ret = kvm_register_vgic_device(KVM_DEV_TYPE_ARM_VGIC_V3);
+	if (ret) {
+		kvm_err("Cannot register GICv3 KVM device.\n");
+		kvm_unregister_device_ops(KVM_DEV_TYPE_ARM_VGIC_V2);
+		return ret;
+	}
+
 	if (kvm_vgic_global_state.vcpu_base == 0)
 		kvm_info("disabling GICv2 emulation\n");
-	kvm_register_vgic_device(KVM_DEV_TYPE_ARM_VGIC_V3);
 
 	kvm_vgic_global_state.vctrl_base = NULL;
 	kvm_vgic_global_state.type = VGIC_V3;

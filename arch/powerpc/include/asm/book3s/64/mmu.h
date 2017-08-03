@@ -23,8 +23,6 @@ struct mmu_psize_def {
 };
 extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
 
-#define radix_enabled() mmu_has_feature(MMU_FTR_RADIX)
-
 #endif /* __ASSEMBLY__ */
 
 /* 64-bit classic hash table MMU */
@@ -32,7 +30,7 @@ extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
 
 #ifndef __ASSEMBLY__
 /*
- * ISA 3.0 partiton and process table entry format
+ * ISA 3.0 partition and process table entry format
  */
 struct prtb_entry {
 	__be64 prtb0;
@@ -46,10 +44,21 @@ struct patb_entry {
 };
 extern struct patb_entry *partition_tb;
 
+/* Bits in patb0 field */
 #define PATB_HR		(1UL << 63)
-#define PATB_GR		(1UL << 63)
-#define RPDB_MASK	0x0ffffffffffff00fUL
+#define RPDB_MASK	0x0fffffffffffff00UL
 #define RPDB_SHIFT	(1UL << 8)
+#define RTS1_SHIFT	61		/* top 2 bits of radix tree size */
+#define RTS1_MASK	(3UL << RTS1_SHIFT)
+#define RTS2_SHIFT	5		/* bottom 3 bits of radix tree size */
+#define RTS2_MASK	(7UL << RTS2_SHIFT)
+#define RPDS_MASK	0x1f		/* root page dir. size field */
+
+/* Bits in patb1 field */
+#define PATB_GR		(1UL << 63)	/* guest uses radix; must match HR */
+#define PRTS_MASK	0x1f		/* process table size field */
+#define PRTB_MASK	0x0ffffffffffff000UL
+
 /*
  * Limit process table to PAGE_SIZE table. This
  * also limit the max pid we can support.
@@ -102,6 +111,9 @@ extern int mmu_vmemmap_psize;
 extern int mmu_io_psize;
 
 /* MMU initialization */
+void mmu_early_init_devtree(void);
+void hash__early_init_devtree(void);
+void radix__early_init_devtree(void);
 extern void radix_init_native(void);
 extern void hash__early_init_mmu(void);
 extern void radix__early_init_mmu(void);
@@ -127,11 +139,21 @@ extern void radix__setup_initial_memory_limit(phys_addr_t first_memblock_base,
 static inline void setup_initial_memory_limit(phys_addr_t first_memblock_base,
 					      phys_addr_t first_memblock_size)
 {
-	if (radix_enabled())
+	if (early_radix_enabled())
 		return radix__setup_initial_memory_limit(first_memblock_base,
 						   first_memblock_size);
 	return hash__setup_initial_memory_limit(first_memblock_base,
 					   first_memblock_size);
 }
+
+extern int (*register_process_table)(unsigned long base, unsigned long page_size,
+				     unsigned long tbl_size);
+
+#ifdef CONFIG_PPC_PSERIES
+extern void radix_init_pseries(void);
+#else
+static inline void radix_init_pseries(void) { };
+#endif
+
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_POWERPC_BOOK3S_64_MMU_H_ */

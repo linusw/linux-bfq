@@ -82,6 +82,7 @@ fallback:
 
 static struct fb_ops omap_fb_ops = {
 	.owner = THIS_MODULE,
+	DRM_FB_HELPER_DEFAULT_OPS,
 
 	/* Note: to properly handle manual update displays, we wrap the
 	 * basic fbdev ops which write to the framebuffer
@@ -92,11 +93,7 @@ static struct fb_ops omap_fb_ops = {
 	.fb_copyarea = drm_fb_helper_sys_copyarea,
 	.fb_imageblit = drm_fb_helper_sys_imageblit,
 
-	.fb_check_var = drm_fb_helper_check_var,
-	.fb_set_par = drm_fb_helper_set_par,
 	.fb_pan_display = omap_fbdev_pan_display,
-	.fb_blank = drm_fb_helper_blank,
-	.fb_setcmap = drm_fb_helper_setcmap,
 };
 
 static int omap_fbdev_create(struct drm_fb_helper *helper,
@@ -125,9 +122,8 @@ static int omap_fbdev_create(struct drm_fb_helper *helper,
 	mode_cmd.width = sizes->surface_width;
 	mode_cmd.height = sizes->surface_height;
 
-	mode_cmd.pitches[0] = align_pitch(
-			mode_cmd.width * ((sizes->surface_bpp + 7) / 8),
-			mode_cmd.width, sizes->surface_bpp);
+	mode_cmd.pitches[0] =
+			DIV_ROUND_UP(mode_cmd.width * sizes->surface_bpp, 8);
 
 	fbdev->ywrap_enabled = priv->has_dmm && ywrap_enabled;
 	if (fbdev->ywrap_enabled) {
@@ -194,7 +190,7 @@ static int omap_fbdev_create(struct drm_fb_helper *helper,
 
 	strcpy(fbi->fix.id, MODULE_NAME);
 
-	drm_fb_helper_fill_fix(fbi, fb->pitches[0], fb->depth);
+	drm_fb_helper_fill_fix(fbi, fb->pitches[0], fb->format->depth);
 	drm_fb_helper_fill_var(fbi, helper, sizes->fb_width, sizes->fb_height);
 
 	dev->mode_config.fb_base = paddr;
@@ -229,10 +225,8 @@ fail:
 
 		drm_fb_helper_release_fbi(helper);
 
-		if (fb) {
-			drm_framebuffer_unregister_private(fb);
+		if (fb)
 			drm_framebuffer_remove(fb);
-		}
 	}
 
 	return ret;
@@ -269,8 +263,7 @@ struct drm_fb_helper *omap_fbdev_init(struct drm_device *dev)
 
 	drm_fb_helper_prepare(dev, helper, &omap_fb_helper_funcs);
 
-	ret = drm_fb_helper_init(dev, helper,
-			priv->num_crtcs, priv->num_connectors);
+	ret = drm_fb_helper_init(dev, helper, priv->num_connectors);
 	if (ret) {
 		dev_err(dev->dev, "could not init fbdev: ret=%d\n", ret);
 		goto fail;
@@ -279,9 +272,6 @@ struct drm_fb_helper *omap_fbdev_init(struct drm_device *dev)
 	ret = drm_fb_helper_single_add_all_connectors(helper);
 	if (ret)
 		goto fini;
-
-	/* disable all the possible outputs/crtcs before entering KMS mode */
-	drm_helper_disable_unused_functions(dev);
 
 	ret = drm_fb_helper_initial_config(helper, 32);
 	if (ret)
@@ -321,10 +311,8 @@ void omap_fbdev_free(struct drm_device *dev)
 	omap_gem_put_paddr(fbdev->bo);
 
 	/* this will free the backing object */
-	if (fbdev->fb) {
-		drm_framebuffer_unregister_private(fbdev->fb);
+	if (fbdev->fb)
 		drm_framebuffer_remove(fbdev->fb);
-	}
 
 	kfree(fbdev);
 

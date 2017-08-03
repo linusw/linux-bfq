@@ -42,6 +42,7 @@
 #include <linux/atomic.h>
 #include <linux/hrtimer.h>
 #include <linux/uuid.h>
+#include <linux/t10-pi.h>
 
 #include <net/checksum.h>
 
@@ -124,6 +125,7 @@ static const char *sdebug_version_date = "20160430";
 #define DEF_OPTS   0
 #define DEF_OPT_BLKS 1024
 #define DEF_PHYSBLK_EXP 0
+#define DEF_OPT_XFERLEN_EXP 0
 #define DEF_PTYPE   TYPE_DISK
 #define DEF_REMOVABLE false
 #define DEF_SCSI_LEVEL   7    /* INQUIRY, byte2 [6->SPC-4; 7->SPC-5] */
@@ -589,6 +591,7 @@ static int sdebug_num_tgts = DEF_NUM_TGTS; /* targets per host */
 static int sdebug_opt_blks = DEF_OPT_BLKS;
 static int sdebug_opts = DEF_OPTS;
 static int sdebug_physblk_exp = DEF_PHYSBLK_EXP;
+static int sdebug_opt_xferlen_exp = DEF_OPT_XFERLEN_EXP;
 static int sdebug_ptype = DEF_PTYPE; /* SCSI peripheral device type */
 static int sdebug_scsi_level = DEF_SCSI_LEVEL;
 static int sdebug_sector_size = DEF_SECTOR_SIZE;
@@ -627,7 +630,7 @@ static LIST_HEAD(sdebug_host_list);
 static DEFINE_SPINLOCK(sdebug_host_list_lock);
 
 static unsigned char *fake_storep;	/* ramdisk storage */
-static struct sd_dif_tuple *dif_storep;	/* protection info */
+static struct t10_pi_tuple *dif_storep;	/* protection info */
 static void *map_storep;		/* provisioning map */
 
 static unsigned long map_size;
@@ -682,7 +685,7 @@ static void *fake_store(unsigned long long lba)
 	return fake_storep + lba * sdebug_sector_size;
 }
 
-static struct sd_dif_tuple *dif_store(sector_t sector)
+static struct t10_pi_tuple *dif_store(sector_t sector)
 {
 	sector = sector_div(sector, sdebug_store_sectors);
 
@@ -890,7 +893,7 @@ static int make_ua(struct scsi_cmnd *scp, struct sdebug_dev_info *devip)
 	return 0;
 }
 
-/* Returns 0 if ok else (DID_ERROR << 16). Sets scp->resid . */
+/* Build SCSI "data-in" buffer. Returns 0 if ok else (DID_ERROR << 16). */
 static int fill_from_dev_buffer(struct scsi_cmnd *scp, unsigned char *arr,
 				int arr_len)
 {
@@ -909,7 +912,35 @@ static int fill_from_dev_buffer(struct scsi_cmnd *scp, unsigned char *arr,
 	return 0;
 }
 
-/* Returns number of bytes fetched into 'arr' or -1 if error. */
+/* Partial build of SCSI "data-in" buffer. Returns 0 if ok else
+ * (DID_ERROR << 16). Can write to offset in data-in buffer. If multiple
+ * calls, not required to write in ascending offset order. Assumes resid
+ * set to scsi_bufflen() prior to any calls.
+ */
+static int p_fill_from_dev_buffer(struct scsi_cmnd *scp, const void *arr,
+				  int arr_len, unsigned int off_dst)
+{
+	int act_len, n;
+	struct scsi_data_buffer *sdb = scsi_in(scp);
+	off_t skip = off_dst;
+
+	if (sdb->length <= off_dst)
+		return 0;
+	if (!(scsi_bidi_cmnd(scp) || scp->sc_data_direction == DMA_FROM_DEVICE))
+		return DID_ERROR << 16;
+
+	act_len = sg_pcopy_from_buffer(sdb->table.sgl, sdb->table.nents,
+				       arr, arr_len, skip);
+	pr_debug("%s: off_dst=%u, scsi_bufflen=%u, act_len=%u, resid=%d\n",
+		 __func__, off_dst, scsi_bufflen(scp), act_len, sdb->resid);
+	n = (int)scsi_bufflen(scp) - ((int)off_dst + act_len);
+	sdb->resid = min(sdb->resid, n);
+	return 0;
+}
+
+/* Fetches from SCSI "data-out" buffer. Returns number of bytes fetched into
+ * 'arr' or -1 if error.
+ */
 static int fetch_to_dev_buffer(struct scsi_cmnd *scp, unsigned char *arr,
 			       int arr_len)
 {
@@ -1176,7 +1207,11 @@ static int inquiry_vpd_b0(unsigned char *arr)
 	memcpy(arr, vpdb0_data, sizeof(vpdb0_data));
 
 	/* Optimal transfer length granularity */
-	gran = 1 << sdebug_physblk_exp;
+	if (sdebug_opt_xferlen_exp != 0 &&
+	    sdebug_physblk_exp < sdebug_opt_xferlen_exp)
+		gran = 1 << sdebug_opt_xferlen_exp;
+	else
+		gran = 1 << sdebug_physblk_exp;
 	put_unaligned_be16(gran, arr + 2);
 
 	/* Maximum Transfer Length */
@@ -1321,7 +1356,7 @@ static int resp_inquiry(struct scsi_cmnd *scp, struct sdebug_dev_info *devip)
 		} else if (0x86 == cmd[2]) { /* extended inquiry */
 			arr[1] = cmd[2];	/*sanity */
 			arr[3] = 0x3c;	/* number of following entries */
-			if (sdebug_dif == SD_DIF_TYPE3_PROTECTION)
+			if (sdebug_dif == T10_PI_TYPE3_PROTECTION)
 				arr[4] = 0x4;	/* SPT: GRD_CHK:1 */
 			else if (have_dif_prot)
 				arr[4] = 0x5;   /* SPT: GRD_CHK:1, REF_CHK:1 */
@@ -2402,7 +2437,7 @@ static __be16 dif_compute_csum(const void *buf, int len)
 	return csum;
 }
 
-static int dif_verify(struct sd_dif_tuple *sdt, const void *data,
+static int dif_verify(struct t10_pi_tuple *sdt, const void *data,
 		      sector_t sector, u32 ei_lba)
 {
 	__be16 csum = dif_compute_csum(data, sdebug_sector_size);
@@ -2414,13 +2449,13 @@ static int dif_verify(struct sd_dif_tuple *sdt, const void *data,
 			be16_to_cpu(csum));
 		return 0x01;
 	}
-	if (sdebug_dif == SD_DIF_TYPE1_PROTECTION &&
+	if (sdebug_dif == T10_PI_TYPE1_PROTECTION &&
 	    be32_to_cpu(sdt->ref_tag) != (sector & 0xffffffff)) {
 		pr_err("REF check failed on sector %lu\n",
 			(unsigned long)sector);
 		return 0x03;
 	}
-	if (sdebug_dif == SD_DIF_TYPE2_PROTECTION &&
+	if (sdebug_dif == T10_PI_TYPE2_PROTECTION &&
 	    be32_to_cpu(sdt->ref_tag) != ei_lba) {
 		pr_err("REF check failed on sector %lu\n",
 			(unsigned long)sector);
@@ -2476,7 +2511,7 @@ static int prot_verify_read(struct scsi_cmnd *SCpnt, sector_t start_sec,
 			    unsigned int sectors, u32 ei_lba)
 {
 	unsigned int i;
-	struct sd_dif_tuple *sdt;
+	struct t10_pi_tuple *sdt;
 	sector_t sector;
 
 	for (i = 0; i < sectors; i++, ei_lba++) {
@@ -2552,13 +2587,13 @@ static int resp_read_dt0(struct scsi_cmnd *scp, struct sdebug_dev_info *devip)
 		break;
 	}
 	if (unlikely(have_dif_prot && check_prot)) {
-		if (sdebug_dif == SD_DIF_TYPE2_PROTECTION &&
+		if (sdebug_dif == T10_PI_TYPE2_PROTECTION &&
 		    (cmd[1] & 0xe0)) {
 			mk_sense_invalid_opcode(scp);
 			return check_condition_result;
 		}
-		if ((sdebug_dif == SD_DIF_TYPE1_PROTECTION ||
-		     sdebug_dif == SD_DIF_TYPE3_PROTECTION) &&
+		if ((sdebug_dif == T10_PI_TYPE1_PROTECTION ||
+		     sdebug_dif == T10_PI_TYPE3_PROTECTION) &&
 		    (cmd[1] & 0xe0) == 0)
 			sdev_printk(KERN_ERR, scp->device, "Unprotected RD "
 				    "to DIF device\n");
@@ -2668,7 +2703,7 @@ static int prot_verify_write(struct scsi_cmnd *SCpnt, sector_t start_sec,
 			     unsigned int sectors, u32 ei_lba)
 {
 	int ret;
-	struct sd_dif_tuple *sdt;
+	struct t10_pi_tuple *sdt;
 	void *daddr;
 	sector_t sector = start_sec;
 	int ppage_offset;
@@ -2694,7 +2729,7 @@ static int prot_verify_write(struct scsi_cmnd *SCpnt, sector_t start_sec,
 		}
 
 		for (ppage_offset = 0; ppage_offset < piter.length;
-		     ppage_offset += sizeof(struct sd_dif_tuple)) {
+		     ppage_offset += sizeof(struct t10_pi_tuple)) {
 			/* If we're at the end of the current
 			 * data page advance to the next one
 			 */
@@ -2865,13 +2900,13 @@ static int resp_write_dt0(struct scsi_cmnd *scp, struct sdebug_dev_info *devip)
 		break;
 	}
 	if (unlikely(have_dif_prot && check_prot)) {
-		if (sdebug_dif == SD_DIF_TYPE2_PROTECTION &&
+		if (sdebug_dif == T10_PI_TYPE2_PROTECTION &&
 		    (cmd[1] & 0xe0)) {
 			mk_sense_invalid_opcode(scp);
 			return check_condition_result;
 		}
-		if ((sdebug_dif == SD_DIF_TYPE1_PROTECTION ||
-		     sdebug_dif == SD_DIF_TYPE3_PROTECTION) &&
+		if ((sdebug_dif == T10_PI_TYPE1_PROTECTION ||
+		     sdebug_dif == T10_PI_TYPE3_PROTECTION) &&
 		    (cmd[1] & 0xe0) == 0)
 			sdev_printk(KERN_ERR, scp->device, "Unprotected WR "
 				    "to DIF device\n");
@@ -3107,13 +3142,13 @@ static int resp_comp_write(struct scsi_cmnd *scp,
 	num = cmd[13];		/* 1 to a maximum of 255 logical blocks */
 	if (0 == num)
 		return 0;	/* degenerate case, not an error */
-	if (sdebug_dif == SD_DIF_TYPE2_PROTECTION &&
+	if (sdebug_dif == T10_PI_TYPE2_PROTECTION &&
 	    (cmd[1] & 0xe0)) {
 		mk_sense_invalid_opcode(scp);
 		return check_condition_result;
 	}
-	if ((sdebug_dif == SD_DIF_TYPE1_PROTECTION ||
-	     sdebug_dif == SD_DIF_TYPE3_PROTECTION) &&
+	if ((sdebug_dif == T10_PI_TYPE1_PROTECTION ||
+	     sdebug_dif == T10_PI_TYPE3_PROTECTION) &&
 	    (cmd[1] & 0xe0) == 0)
 		sdev_printk(KERN_ERR, scp->device, "Unprotected WR "
 			    "to DIF device\n");
@@ -3269,6 +3304,8 @@ static int resp_get_lba_status(struct scsi_cmnd *scp,
 	return fill_from_dev_buffer(scp, arr, SDEBUG_GET_LBA_STATUS_LEN);
 }
 
+#define RL_BUCKET_ELEMS 8
+
 /* Even though each pseudo target has a REPORT LUNS "well known logical unit"
  * (W-LUN), the normal Linux scanning logic does not associate it with a
  * device (e.g. /dev/sg7). The following magic will make that association:
@@ -3285,12 +3322,14 @@ static int resp_report_luns(struct scsi_cmnd *scp,
 	unsigned char select_report;
 	u64 lun;
 	struct scsi_lun *lun_p;
-	u8 *arr;
+	u8 arr[RL_BUCKET_ELEMS * sizeof(struct scsi_lun)];
 	unsigned int lun_cnt;	/* normal LUN count (max: 256) */
 	unsigned int wlun_cnt;	/* report luns W-LUN count */
 	unsigned int tlun_cnt;	/* total LUN count */
 	unsigned int rlen;	/* response length (in bytes) */
-	int i, res;
+	int k, j, n, res;
+	unsigned int off_rsp = 0;
+	const int sz_lun = sizeof(struct scsi_lun);
 
 	clear_luns_changed_on_target(devip);
 
@@ -3329,33 +3368,40 @@ static int resp_report_luns(struct scsi_cmnd *scp,
 		--lun_cnt;
 
 	tlun_cnt = lun_cnt + wlun_cnt;
-
-	rlen = (tlun_cnt * sizeof(struct scsi_lun)) + 8;
-	arr = vmalloc(rlen);
-	if (!arr) {
-		mk_sense_buffer(scp, ILLEGAL_REQUEST, INSUFF_RES_ASC,
-				INSUFF_RES_ASCQ);
-		return check_condition_result;
-	}
-	memset(arr, 0, rlen);
+	rlen = tlun_cnt * sz_lun;	/* excluding 8 byte header */
+	scsi_set_resid(scp, scsi_bufflen(scp));
 	pr_debug("select_report %d luns = %d wluns = %d no_lun0 %d\n",
 		 select_report, lun_cnt, wlun_cnt, sdebug_no_lun_0);
 
-	/* luns start at byte 8 in response following the header */
-	lun_p = (struct scsi_lun *)&arr[8];
-
-	/* LUNs use single level peripheral device addressing method */
+	/* loops rely on sizeof response header same as sizeof lun (both 8) */
 	lun = sdebug_no_lun_0 ? 1 : 0;
-	for (i = 0; i < lun_cnt; i++)
-		int_to_scsilun(lun++, lun_p++);
-
-	if (wlun_cnt)
-		int_to_scsilun(SCSI_W_LUN_REPORT_LUNS, lun_p++);
-
-	put_unaligned_be32(rlen - 8, &arr[0]);
-
-	res = fill_from_dev_buffer(scp, arr, rlen);
-	vfree(arr);
+	for (k = 0, j = 0, res = 0; true; ++k, j = 0) {
+		memset(arr, 0, sizeof(arr));
+		lun_p = (struct scsi_lun *)&arr[0];
+		if (k == 0) {
+			put_unaligned_be32(rlen, &arr[0]);
+			++lun_p;
+			j = 1;
+		}
+		for ( ; j < RL_BUCKET_ELEMS; ++j, ++lun_p) {
+			if ((k * RL_BUCKET_ELEMS) + j > lun_cnt)
+				break;
+			int_to_scsilun(lun++, lun_p);
+		}
+		if (j < RL_BUCKET_ELEMS)
+			break;
+		n = j * sz_lun;
+		res = p_fill_from_dev_buffer(scp, arr, n, off_rsp);
+		if (res)
+			return res;
+		off_rsp += n;
+	}
+	if (wlun_cnt) {
+		int_to_scsilun(SCSI_W_LUN_REPORT_LUNS, lun_p);
+		++j;
+	}
+	if (j > 0)
+		res = p_fill_from_dev_buffer(scp, arr, j * sz_lun, off_rsp);
 	return res;
 }
 
@@ -4045,7 +4091,7 @@ static int schedule_resp(struct scsi_cmnd *cmnd, struct sdebug_dev_info *devip,
 			jiffies_to_timespec(delta_jiff, &ts);
 			kt = ktime_set(ts.tv_sec, ts.tv_nsec);
 		} else
-			kt = ktime_set(0, sdebug_ndelay);
+			kt = sdebug_ndelay;
 		if (NULL == sd_dp) {
 			sd_dp = kzalloc(sizeof(*sd_dp), GFP_ATOMIC);
 			if (NULL == sd_dp)
@@ -4121,6 +4167,7 @@ module_param_named(num_tgts, sdebug_num_tgts, int, S_IRUGO | S_IWUSR);
 module_param_named(opt_blks, sdebug_opt_blks, int, S_IRUGO);
 module_param_named(opts, sdebug_opts, int, S_IRUGO | S_IWUSR);
 module_param_named(physblk_exp, sdebug_physblk_exp, int, S_IRUGO);
+module_param_named(opt_xferlen_exp, sdebug_opt_xferlen_exp, int, S_IRUGO);
 module_param_named(ptype, sdebug_ptype, int, S_IRUGO | S_IWUSR);
 module_param_named(removable, sdebug_removable, bool, S_IRUGO | S_IWUSR);
 module_param_named(scsi_level, sdebug_scsi_level, int, S_IRUGO);
@@ -4172,6 +4219,7 @@ MODULE_PARM_DESC(num_tgts, "number of targets per host to simulate(def=1)");
 MODULE_PARM_DESC(opt_blks, "optimal transfer length in blocks (def=1024)");
 MODULE_PARM_DESC(opts, "1->noise, 2->medium_err, 4->timeout, 8->recovered_err... (def=0)");
 MODULE_PARM_DESC(physblk_exp, "physical block exponent (def=0)");
+MODULE_PARM_DESC(opt_xferlen_exp, "optimal transfer length granularity exponent (def=physblk_exp)");
 MODULE_PARM_DESC(ptype, "SCSI peripheral type(def=0[disk])");
 MODULE_PARM_DESC(removable, "claim to have removable media (def=0)");
 MODULE_PARM_DESC(scsi_level, "SCSI level to simulate(def=7[SPC-5])");
@@ -4900,12 +4948,11 @@ static int __init scsi_debug_init(void)
 	}
 
 	switch (sdebug_dif) {
-
-	case SD_DIF_TYPE0_PROTECTION:
+	case T10_PI_TYPE0_PROTECTION:
 		break;
-	case SD_DIF_TYPE1_PROTECTION:
-	case SD_DIF_TYPE2_PROTECTION:
-	case SD_DIF_TYPE3_PROTECTION:
+	case T10_PI_TYPE1_PROTECTION:
+	case T10_PI_TYPE2_PROTECTION:
+	case T10_PI_TYPE3_PROTECTION:
 		have_dif_prot = true;
 		break;
 
@@ -4987,7 +5034,7 @@ static int __init scsi_debug_init(void)
 	if (sdebug_dix) {
 		int dif_size;
 
-		dif_size = sdebug_store_sectors * sizeof(struct sd_dif_tuple);
+		dif_size = sdebug_store_sectors * sizeof(struct t10_pi_tuple);
 		dif_storep = vmalloc(dif_size);
 
 		pr_err("dif_storep %u bytes @ %p\n", dif_size, dif_storep);
@@ -5095,6 +5142,7 @@ static void __exit scsi_debug_exit(void)
 	bus_unregister(&pseudo_lld_bus);
 	root_device_unregister(pseudo_primary);
 
+	vfree(map_storep);
 	vfree(dif_storep);
 	vfree(fake_storep);
 	kfree(sdebug_q_arr);
@@ -5441,19 +5489,19 @@ static int sdebug_driver_probe(struct device * dev)
 
 	switch (sdebug_dif) {
 
-	case SD_DIF_TYPE1_PROTECTION:
+	case T10_PI_TYPE1_PROTECTION:
 		hprot = SHOST_DIF_TYPE1_PROTECTION;
 		if (sdebug_dix)
 			hprot |= SHOST_DIX_TYPE1_PROTECTION;
 		break;
 
-	case SD_DIF_TYPE2_PROTECTION:
+	case T10_PI_TYPE2_PROTECTION:
 		hprot = SHOST_DIF_TYPE2_PROTECTION;
 		if (sdebug_dix)
 			hprot |= SHOST_DIX_TYPE2_PROTECTION;
 		break;
 
-	case SD_DIF_TYPE3_PROTECTION:
+	case T10_PI_TYPE3_PROTECTION:
 		hprot = SHOST_DIF_TYPE3_PROTECTION;
 		if (sdebug_dix)
 			hprot |= SHOST_DIX_TYPE3_PROTECTION;

@@ -17,7 +17,6 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
 
 #include <linux/i2c.h>
 #include <linux/i2c-mux.h>
@@ -771,7 +770,7 @@ static void __init of_unittest_platform_populate(void)
 	};
 
 	np = of_find_node_by_path("/testcase-data");
-	of_platform_populate(np, of_default_bus_match_table, NULL, NULL);
+	of_platform_default_populate(np, NULL, NULL);
 
 	/* Test that a missing irq domain returns -EPROBE_DEFER */
 	np = of_find_node_by_path("/testcase-data/testcase-device1");
@@ -1181,7 +1180,7 @@ static void of_unittest_destroy_tracked_overlays(void)
 	} while (defers > 0);
 }
 
-static int of_unittest_apply_overlay(int unittest_nr, int overlay_nr,
+static int of_unittest_apply_overlay(int overlay_nr, int unittest_nr,
 		int *overlay_id)
 {
 	struct device_node *np = NULL;
@@ -1840,7 +1839,7 @@ static void of_unittest_overlay_i2c_15(void)
 	int ret;
 
 	/* device should enable */
-	ret = of_unittest_apply_overlay_check(16, 15, 0, 1, I2C_OVERLAY);
+	ret = of_unittest_apply_overlay_check(15, 15, 0, 1, I2C_OVERLAY);
 	if (ret != 0)
 		return;
 
@@ -1871,8 +1870,7 @@ static void __init of_unittest_overlay(void)
 		goto out;
 	}
 
-	ret = of_platform_populate(bus_np, of_default_bus_match_table,
-			NULL, NULL);
+	ret = of_platform_default_populate(bus_np, NULL, NULL);
 	if (ret != 0) {
 		unittest(0, "could not populate bus @ \"%s\"\n", bus_path);
 		goto out;

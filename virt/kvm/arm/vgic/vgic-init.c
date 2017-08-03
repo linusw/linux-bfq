@@ -73,12 +73,8 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 	int i, vcpu_lock_idx = -1, ret;
 	struct kvm_vcpu *vcpu;
 
-	mutex_lock(&kvm->lock);
-
-	if (irqchip_in_kernel(kvm)) {
-		ret = -EEXIST;
-		goto out;
-	}
+	if (irqchip_in_kernel(kvm))
+		return -EEXIST;
 
 	/*
 	 * This function is also called by the KVM_CREATE_IRQCHIP handler,
@@ -87,10 +83,8 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 	 * the proper checks already.
 	 */
 	if (type == KVM_DEV_TYPE_ARM_VGIC_V2 &&
-		!kvm_vgic_global_state.can_emulate_gicv2) {
-		ret = -ENODEV;
-		goto out;
-	}
+		!kvm_vgic_global_state.can_emulate_gicv2)
+		return -ENODEV;
 
 	/*
 	 * Any time a vcpu is run, vcpu_load is called which tries to grab the
@@ -138,9 +132,6 @@ out_unlock:
 		vcpu = kvm_get_vcpu(kvm, vcpu_lock_idx);
 		mutex_unlock(&vcpu->mutex);
 	}
-
-out:
-	mutex_unlock(&kvm->lock);
 	return ret;
 }
 
@@ -156,6 +147,9 @@ static int kvm_vgic_dist_init(struct kvm *kvm, unsigned int nr_spis)
 	struct vgic_dist *dist = &kvm->arch.vgic;
 	struct kvm_vcpu *vcpu0 = kvm_get_vcpu(kvm, 0);
 	int i;
+
+	INIT_LIST_HEAD(&dist->lpi_list_head);
+	spin_lock_init(&dist->lpi_list_lock);
 
 	dist->spis = kcalloc(nr_spis, sizeof(struct vgic_irq), GFP_KERNEL);
 	if (!dist->spis)
@@ -177,6 +171,7 @@ static int kvm_vgic_dist_init(struct kvm *kvm, unsigned int nr_spis)
 		spin_lock_init(&irq->irq_lock);
 		irq->vcpu = NULL;
 		irq->target_vcpu = vcpu0;
+		kref_init(&irq->refcount);
 		if (dist->vgic_model == KVM_DEV_TYPE_ARM_VGIC_V2)
 			irq->targets = 0;
 		else
@@ -211,6 +206,7 @@ static void kvm_vgic_vcpu_init(struct kvm_vcpu *vcpu)
 		irq->vcpu = NULL;
 		irq->target_vcpu = vcpu;
 		irq->targets = 1U << vcpu->vcpu_id;
+		kref_init(&irq->refcount);
 		if (vgic_irq_is_sgi(i)) {
 			/* SGIs */
 			irq->enabled = 1;
@@ -253,8 +249,17 @@ int vgic_init(struct kvm *kvm)
 	if (ret)
 		goto out;
 
+	if (vgic_has_its(kvm))
+		dist->msis_require_devid = true;
+
 	kvm_for_each_vcpu(i, vcpu, kvm)
 		kvm_vgic_vcpu_init(vcpu);
+
+	ret = kvm_vgic_setup_default_irq_routing(kvm);
+	if (ret)
+		goto out;
+
+	vgic_debug_init(kvm);
 
 	dist->initialized = true;
 out:
@@ -265,16 +270,11 @@ static void kvm_vgic_dist_destroy(struct kvm *kvm)
 {
 	struct vgic_dist *dist = &kvm->arch.vgic;
 
-	mutex_lock(&kvm->lock);
-
 	dist->ready = false;
 	dist->initialized = false;
 
 	kfree(dist->spis);
-	kfree(dist->redist_iodevs);
 	dist->nr_spis = 0;
-
-	mutex_unlock(&kvm->lock);
 }
 
 void kvm_vgic_vcpu_destroy(struct kvm_vcpu *vcpu)
@@ -284,15 +284,25 @@ void kvm_vgic_vcpu_destroy(struct kvm_vcpu *vcpu)
 	INIT_LIST_HEAD(&vgic_cpu->ap_list_head);
 }
 
-void kvm_vgic_destroy(struct kvm *kvm)
+/* To be called with kvm->lock held */
+static void __kvm_vgic_destroy(struct kvm *kvm)
 {
 	struct kvm_vcpu *vcpu;
 	int i;
+
+	vgic_debug_destroy(kvm);
 
 	kvm_vgic_dist_destroy(kvm);
 
 	kvm_for_each_vcpu(i, vcpu, kvm)
 		kvm_vgic_vcpu_destroy(vcpu);
+}
+
+void kvm_vgic_destroy(struct kvm *kvm)
+{
+	mutex_lock(&kvm->lock);
+	__kvm_vgic_destroy(kvm);
+	mutex_unlock(&kvm->lock);
 }
 
 /**
@@ -346,6 +356,10 @@ int kvm_vgic_map_resources(struct kvm *kvm)
 		ret = vgic_v2_map_resources(kvm);
 	else
 		ret = vgic_v3_map_resources(kvm);
+
+	if (ret)
+		__kvm_vgic_destroy(kvm);
+
 out:
 	mutex_unlock(&kvm->lock);
 	return ret;
@@ -353,31 +367,18 @@ out:
 
 /* GENERIC PROBE */
 
-static void vgic_init_maintenance_interrupt(void *info)
+static int vgic_init_cpu_starting(unsigned int cpu)
 {
 	enable_percpu_irq(kvm_vgic_global_state.maint_irq, 0);
+	return 0;
 }
 
-static int vgic_cpu_notify(struct notifier_block *self,
-			   unsigned long action, void *cpu)
+
+static int vgic_init_cpu_dying(unsigned int cpu)
 {
-	switch (action) {
-	case CPU_STARTING:
-	case CPU_STARTING_FROZEN:
-		vgic_init_maintenance_interrupt(NULL);
-		break;
-	case CPU_DYING:
-	case CPU_DYING_FROZEN:
-		disable_percpu_irq(kvm_vgic_global_state.maint_irq);
-		break;
-	}
-
-	return NOTIFY_OK;
+	disable_percpu_irq(kvm_vgic_global_state.maint_irq);
+	return 0;
 }
-
-static struct notifier_block vgic_cpu_nb = {
-	.notifier_call = vgic_cpu_notify,
-};
 
 static irqreturn_t vgic_maintenance_handler(int irq, void *data)
 {
@@ -388,6 +389,25 @@ static irqreturn_t vgic_maintenance_handler(int irq, void *data)
 	 * interrupts on the exit path (see vgic_process_maintenance).
 	 */
 	return IRQ_HANDLED;
+}
+
+/**
+ * kvm_vgic_init_cpu_hardware - initialize the GIC VE hardware
+ *
+ * For a specific CPU, initialize the GIC VE hardware.
+ */
+void kvm_vgic_init_cpu_hardware(void)
+{
+	BUG_ON(preemptible());
+
+	/*
+	 * We want to make sure the list registers start out clear so that we
+	 * only have the program the used registers.
+	 */
+	if (kvm_vgic_global_state.type == VGIC_V2)
+		vgic_v2_init_lrs();
+	else
+		kvm_call_hyp(__vgic_v3_init_lrs);
 }
 
 /**
@@ -416,6 +436,10 @@ int kvm_vgic_hyp_init(void)
 		break;
 	case GIC_V3:
 		ret = vgic_v3_probe(gic_kvm_info);
+		if (!ret) {
+			static_branch_enable(&kvm_vgic_global_state.gicv3_cpuif);
+			kvm_info("GIC system register CPU interface enabled\n");
+		}
 		break;
 	default:
 		ret = -ENODEV;
@@ -434,13 +458,13 @@ int kvm_vgic_hyp_init(void)
 		return ret;
 	}
 
-	ret = __register_cpu_notifier(&vgic_cpu_nb);
+	ret = cpuhp_setup_state(CPUHP_AP_KVM_ARM_VGIC_INIT_STARTING,
+				"kvm/arm/vgic:starting",
+				vgic_init_cpu_starting, vgic_init_cpu_dying);
 	if (ret) {
 		kvm_err("Cannot register vgic CPU notifier\n");
 		goto out_free_irq;
 	}
-
-	on_each_cpu(vgic_init_maintenance_interrupt, NULL, 1);
 
 	kvm_info("vgic interrupt IRQ%d\n", kvm_vgic_global_state.maint_irq);
 	return 0;

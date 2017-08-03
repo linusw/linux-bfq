@@ -152,7 +152,7 @@ module_param(lacp_rate, charp, 0);
 MODULE_PARM_DESC(lacp_rate, "LACPDU tx rate to request from 802.3ad partner; "
 			    "0 for slow, 1 for fast");
 module_param(ad_select, charp, 0);
-MODULE_PARM_DESC(ad_select, "803.ad aggregation selection logic; "
+MODULE_PARM_DESC(ad_select, "802.3ad aggregation selection logic; "
 			    "0 for stable (default), 1 for bandwidth, "
 			    "2 for count");
 module_param(min_links, int, 0);
@@ -199,7 +199,7 @@ MODULE_PARM_DESC(lp_interval, "The number of seconds between instances where "
 atomic_t netpoll_block_tx = ATOMIC_INIT(0);
 #endif
 
-int bond_net_id __read_mostly;
+unsigned int bond_net_id __read_mostly;
 
 static __be32 arp_target[BOND_MAX_ARP_TARGETS];
 static int arp_ip_count;
@@ -211,8 +211,8 @@ static int lacp_fast;
 
 static int bond_init(struct net_device *bond_dev);
 static void bond_uninit(struct net_device *bond_dev);
-static struct rtnl_link_stats64 *bond_get_stats(struct net_device *bond_dev,
-						struct rtnl_link_stats64 *stats);
+static void bond_get_stats(struct net_device *bond_dev,
+			   struct rtnl_link_stats64 *stats);
 static void bond_slave_arr_handler(struct work_struct *work);
 static bool bond_time_in_interval(struct bonding *bond, unsigned long last_act,
 				  int mod);
@@ -471,9 +471,9 @@ static int bond_check_dev_link(struct bonding *bond,
 		/* Yes, the mii is overlaid on the ifreq.ifr_ifru */
 		strncpy(ifr.ifr_name, slave_dev->name, IFNAMSIZ);
 		mii = if_mii(&ifr);
-		if (IOCTL(slave_dev, &ifr, SIOCGMIIPHY) == 0) {
+		if (ioctl(slave_dev, &ifr, SIOCGMIIPHY) == 0) {
 			mii->reg_num = MII_BMSR;
-			if (IOCTL(slave_dev, &ifr, SIOCGMIIREG) == 0)
+			if (ioctl(slave_dev, &ifr, SIOCGMIIREG) == 0)
 				return mii->val_out & BMSR_LSTATUS;
 		}
 	}
@@ -1104,11 +1104,11 @@ static void bond_compute_features(struct bonding *bond)
 		gso_max_size = min(gso_max_size, slave->dev->gso_max_size);
 		gso_max_segs = min(gso_max_segs, slave->dev->gso_max_segs);
 	}
+	bond_dev->hard_header_len = max_hard_header_len;
 
 done:
 	bond_dev->vlan_features = vlan_features;
 	bond_dev->hw_enc_features = enc_features | NETIF_F_GSO_ENCAP_ALL;
-	bond_dev->hard_header_len = max_hard_header_len;
 	bond_dev->gso_max_segs = gso_max_segs;
 	netif_set_gso_max_size(bond_dev, gso_max_size);
 
@@ -1341,9 +1341,10 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 			    slave_dev->name);
 	}
 
-	/* already enslaved */
-	if (slave_dev->flags & IFF_SLAVE) {
-		netdev_dbg(bond_dev, "Error: Device was already enslaved\n");
+	/* already in-use? */
+	if (netdev_is_rx_handler_busy(slave_dev)) {
+		netdev_err(bond_dev,
+			   "Error: Device is in use and cannot be enslaved\n");
 		return -EBUSY;
 	}
 
@@ -1422,7 +1423,16 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 		return -EINVAL;
 	}
 
-	if (slave_ops->ndo_set_mac_address == NULL) {
+	if (slave_dev->type == ARPHRD_INFINIBAND &&
+	    BOND_MODE(bond) != BOND_MODE_ACTIVEBACKUP) {
+		netdev_warn(bond_dev, "Type (%d) supports only active-backup mode\n",
+			    slave_dev->type);
+		res = -EOPNOTSUPP;
+		goto err_undo_flags;
+	}
+
+	if (!slave_ops->ndo_set_mac_address ||
+	    slave_dev->type == ARPHRD_INFINIBAND) {
 		netdev_warn(bond_dev, "The slave device specified does not support setting the MAC address\n");
 		if (BOND_MODE(bond) == BOND_MODE_ACTIVEBACKUP &&
 		    bond->params.fail_over_mac != BOND_FOM_ACTIVE) {
@@ -1983,11 +1993,10 @@ static int  bond_release_and_destroy(struct net_device *bond_dev,
 	return ret;
 }
 
-static int bond_info_query(struct net_device *bond_dev, struct ifbond *info)
+static void bond_info_query(struct net_device *bond_dev, struct ifbond *info)
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	bond_fill_ifbond(bond, info);
-	return 0;
 }
 
 static int bond_slave_info_query(struct net_device *bond_dev, struct ifslave *info)
@@ -2260,22 +2269,23 @@ re_arm:
 	}
 }
 
+static int bond_upper_dev_walk(struct net_device *upper, void *data)
+{
+	__be32 ip = *((__be32 *)data);
+
+	return ip == bond_confirm_addr(upper, 0, ip);
+}
+
 static bool bond_has_this_ip(struct bonding *bond, __be32 ip)
 {
-	struct net_device *upper;
-	struct list_head *iter;
 	bool ret = false;
 
 	if (ip == bond_confirm_addr(bond->dev, 0, ip))
 		return true;
 
 	rcu_read_lock();
-	netdev_for_each_all_upper_dev_rcu(bond->dev, upper, iter) {
-		if (ip == bond_confirm_addr(upper, 0, ip)) {
-			ret = true;
-			break;
-		}
-	}
+	if (netdev_walk_all_upper_dev_rcu(bond->dev, bond_upper_dev_walk, &ip))
+		ret = true;
 	rcu_read_unlock();
 
 	return ret;
@@ -3326,8 +3336,8 @@ static void bond_fold_stats(struct rtnl_link_stats64 *_res,
 	}
 }
 
-static struct rtnl_link_stats64 *bond_get_stats(struct net_device *bond_dev,
-						struct rtnl_link_stats64 *stats)
+static void bond_get_stats(struct net_device *bond_dev,
+			   struct rtnl_link_stats64 *stats)
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct rtnl_link_stats64 temp;
@@ -3351,8 +3361,6 @@ static struct rtnl_link_stats64 *bond_get_stats(struct net_device *bond_dev,
 
 	memcpy(&bond->bond_stats, stats, sizeof(*stats));
 	spin_unlock(&bond->stats_lock);
-
-	return stats;
 }
 
 static int bond_do_ioctl(struct net_device *bond_dev, struct ifreq *ifr, int cmd)
@@ -3400,12 +3408,11 @@ static int bond_do_ioctl(struct net_device *bond_dev, struct ifreq *ifr, int cmd
 		if (copy_from_user(&k_binfo, u_binfo, sizeof(ifbond)))
 			return -EFAULT;
 
-		res = bond_info_query(bond_dev, &k_binfo);
-		if (res == 0 &&
-		    copy_to_user(u_binfo, &k_binfo, sizeof(ifbond)))
+		bond_info_query(bond_dev, &k_binfo);
+		if (copy_to_user(u_binfo, &k_binfo, sizeof(ifbond)))
 			return -EFAULT;
 
-		return res;
+		return 0;
 	case BOND_SLAVE_INFO_QUERY_OLD:
 	case SIOCBONDSLAVEINFOQUERY:
 		u_sinfo = (struct ifslave __user *)ifr->ifr_data;
@@ -4069,16 +4076,16 @@ static netdev_tx_t bond_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	return ret;
 }
 
-static int bond_ethtool_get_settings(struct net_device *bond_dev,
-				     struct ethtool_cmd *ecmd)
+static int bond_ethtool_get_link_ksettings(struct net_device *bond_dev,
+					   struct ethtool_link_ksettings *cmd)
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	unsigned long speed = 0;
 	struct list_head *iter;
 	struct slave *slave;
 
-	ecmd->duplex = DUPLEX_UNKNOWN;
-	ecmd->port = PORT_OTHER;
+	cmd->base.duplex = DUPLEX_UNKNOWN;
+	cmd->base.port = PORT_OTHER;
 
 	/* Since bond_slave_can_tx returns false for all inactive or down slaves, we
 	 * do not need to check mode.  Though link speed might not represent
@@ -4089,12 +4096,12 @@ static int bond_ethtool_get_settings(struct net_device *bond_dev,
 		if (bond_slave_can_tx(slave)) {
 			if (slave->speed != SPEED_UNKNOWN)
 				speed += slave->speed;
-			if (ecmd->duplex == DUPLEX_UNKNOWN &&
+			if (cmd->base.duplex == DUPLEX_UNKNOWN &&
 			    slave->duplex != DUPLEX_UNKNOWN)
-				ecmd->duplex = slave->duplex;
+				cmd->base.duplex = slave->duplex;
 		}
 	}
-	ethtool_cmd_speed_set(ecmd, speed ? : SPEED_UNKNOWN);
+	cmd->base.speed = speed ? : SPEED_UNKNOWN;
 
 	return 0;
 }
@@ -4110,8 +4117,8 @@ static void bond_ethtool_get_drvinfo(struct net_device *bond_dev,
 
 static const struct ethtool_ops bond_ethtool_ops = {
 	.get_drvinfo		= bond_ethtool_get_drvinfo,
-	.get_settings		= bond_ethtool_get_settings,
 	.get_link		= ethtool_op_get_link,
+	.get_link_ksettings	= bond_ethtool_get_link_ksettings,
 };
 
 static const struct net_device_ops bond_netdev_ops = {
@@ -4172,6 +4179,7 @@ void bond_setup(struct net_device *bond_dev)
 
 	/* Initialize the device entry points */
 	ether_setup(bond_dev);
+	bond_dev->max_mtu = ETH_MAX_MTU;
 	bond_dev->netdev_ops = &bond_netdev_ops;
 	bond_dev->ethtool_ops = &bond_ethtool_ops;
 
@@ -4608,26 +4616,6 @@ static int bond_check_params(struct bond_params *params)
 	return 0;
 }
 
-static struct lock_class_key bonding_netdev_xmit_lock_key;
-static struct lock_class_key bonding_netdev_addr_lock_key;
-static struct lock_class_key bonding_tx_busylock_key;
-
-static void bond_set_lockdep_class_one(struct net_device *dev,
-				       struct netdev_queue *txq,
-				       void *_unused)
-{
-	lockdep_set_class(&txq->_xmit_lock,
-			  &bonding_netdev_xmit_lock_key);
-}
-
-static void bond_set_lockdep_class(struct net_device *dev)
-{
-	lockdep_set_class(&dev->addr_list_lock,
-			  &bonding_netdev_addr_lock_key);
-	netdev_for_each_tx_queue(dev, bond_set_lockdep_class_one, NULL);
-	dev->qdisc_tx_busylock = &bonding_tx_busylock_key;
-}
-
 /* Called from registration process */
 static int bond_init(struct net_device *bond_dev)
 {
@@ -4636,11 +4624,11 @@ static int bond_init(struct net_device *bond_dev)
 
 	netdev_dbg(bond_dev, "Begin bond_init\n");
 
-	bond->wq = create_singlethread_workqueue(bond_dev->name);
+	bond->wq = alloc_ordered_workqueue(bond_dev->name, WQ_MEM_RECLAIM);
 	if (!bond->wq)
 		return -ENOMEM;
 
-	bond_set_lockdep_class(bond_dev);
+	netdev_lockdep_set_classes(bond_dev);
 
 	list_add_tail(&bond->bond_list, &bn->dev_list);
 

@@ -52,6 +52,7 @@
 #include "util/evlist.h"
 #include "util/evsel.h"
 #include "util/debug.h"
+#include "util/drv_configs.h"
 #include "util/color.h"
 #include "util/stat.h"
 #include "util/header.h"
@@ -65,6 +66,7 @@
 #include "util/group.h"
 #include "asm/bug.h"
 
+#include <linux/time64.h>
 #include <api/fs/fs.h>
 #include <stdlib.h>
 #include <sys/prctl.h>
@@ -172,7 +174,7 @@ static inline void diff_timespec(struct timespec *r, struct timespec *a,
 {
 	r->tv_sec = a->tv_sec - b->tv_sec;
 	if (a->tv_nsec < b->tv_nsec) {
-		r->tv_nsec = a->tv_nsec + 1000000000L - b->tv_nsec;
+		r->tv_nsec = a->tv_nsec + NSEC_PER_SEC - b->tv_nsec;
 		r->tv_sec--;
 	} else {
 		r->tv_nsec = a->tv_nsec - b->tv_nsec ;
@@ -331,7 +333,7 @@ static int read_counter(struct perf_evsel *counter)
 	return 0;
 }
 
-static void read_counters(bool close_counters)
+static void read_counters(void)
 {
 	struct perf_evsel *counter;
 
@@ -341,11 +343,6 @@ static void read_counters(bool close_counters)
 
 		if (perf_stat_process_counter(&stat_config, counter))
 			pr_warning("failed to process counter %s\n", counter->name);
-
-		if (close_counters) {
-			perf_evsel__close_fd(counter, perf_evsel__nr_cpus(counter),
-					     thread_map__nr(evsel_list->threads));
-		}
 	}
 }
 
@@ -353,13 +350,13 @@ static void process_interval(void)
 {
 	struct timespec ts, rs;
 
-	read_counters(false);
+	read_counters();
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	diff_timespec(&rs, &ts, &ref_time);
 
 	if (STAT_RECORD) {
-		if (WRITE_STAT_ROUND_EVENT(rs.tv_sec * NSECS_PER_SEC + rs.tv_nsec, INTERVAL))
+		if (WRITE_STAT_ROUND_EVENT(rs.tv_sec * NSEC_PER_SEC + rs.tv_nsec, INTERVAL))
 			pr_err("failed to write stat round event\n");
 	}
 
@@ -369,7 +366,7 @@ static void process_interval(void)
 static void enable_counters(void)
 {
 	if (initial_delay)
-		usleep(initial_delay * 1000);
+		usleep(initial_delay * USEC_PER_MSEC);
 
 	/*
 	 * We need to enable counters only if:
@@ -378,6 +375,17 @@ static void enable_counters(void)
 	 */
 	if (!target__none(&target) || initial_delay)
 		perf_evlist__enable(evsel_list);
+}
+
+static void disable_counters(void)
+{
+	/*
+	 * If we don't have tracee (attaching to task or cpu), counters may
+	 * still be running. To get accurate group ratios, we must stop groups
+	 * from counting before reading their constituent counters.
+	 */
+	if (!target__none(&target))
+		perf_evlist__disable(evsel_list);
 }
 
 static volatile int workload_exec_errno;
@@ -525,7 +533,7 @@ static int store_counter_ids(struct perf_evsel *counter)
 static int __run_perf_stat(int argc, const char **argv)
 {
 	int interval = stat_config.interval;
-	char msg[512];
+	char msg[BUFSIZ];
 	unsigned long long t0, t1;
 	struct perf_evsel *counter;
 	struct timespec ts;
@@ -533,10 +541,11 @@ static int __run_perf_stat(int argc, const char **argv)
 	int status = 0;
 	const bool forks = (argc > 0);
 	bool is_pipe = STAT_RECORD ? perf_stat.file.is_pipe : false;
+	struct perf_evsel_config_term *err_term;
 
 	if (interval) {
-		ts.tv_sec  = interval / 1000;
-		ts.tv_nsec = (interval % 1000) * 1000000;
+		ts.tv_sec  = interval / USEC_PER_MSEC;
+		ts.tv_nsec = (interval % USEC_PER_MSEC) * NSEC_PER_MSEC;
 	} else {
 		ts.tv_sec  = 1;
 		ts.tv_nsec = 0;
@@ -564,7 +573,7 @@ try_again:
 			if (errno == EINVAL || errno == ENOSYS ||
 			    errno == ENOENT || errno == EOPNOTSUPP ||
 			    errno == ENXIO) {
-				if (verbose)
+				if (verbose > 0)
 					ui__warning("%s event is not supported by the kernel.\n",
 						    perf_evsel__name(counter));
 				counter->supported = false;
@@ -573,7 +582,7 @@ try_again:
 				    !(counter->leader->nr_members > 1))
 					continue;
 			} else if (perf_evsel__fallback(counter, errno, msg, sizeof(msg))) {
-                                if (verbose)
+                                if (verbose > 0)
                                         ui__warning("%s\n", msg);
                                 goto try_again;
                         }
@@ -601,6 +610,13 @@ try_again:
 		error("failed to set filter \"%s\" on event %s with %d (%s)\n",
 			counter->filter, perf_evsel__name(counter), errno,
 			str_error_r(errno, msg, sizeof(msg)));
+		return -1;
+	}
+
+	if (perf_evlist__apply_drv_configs(evsel_list, &counter, &err_term)) {
+		error("failed to set config \"%s\" on event %s with %d (%s)\n",
+		      err_term->val.drv_cfg, perf_evsel__name(counter), errno,
+		      str_error_r(errno, msg, sizeof(msg)));
 		return -1;
 	}
 
@@ -657,11 +673,20 @@ try_again:
 		}
 	}
 
+	disable_counters();
+
 	t1 = rdclock();
 
 	update_stats(&walltime_nsecs_stats, t1 - t0);
 
-	read_counters(true);
+	/*
+	 * Closing a group leader splits the group, and as we only disable
+	 * group leaders, results in remaining events becoming enabled. To
+	 * avoid arbitrary skew, we must read all counters before closing any
+	 * group leaders.
+	 */
+	read_counters();
+	perf_evlist__close(evsel_list);
 
 	return WEXITSTATUS(status);
 }
@@ -956,7 +981,7 @@ static void print_metric_header(void *ctx, const char *color __maybe_unused,
 static void nsec_printout(int id, int nr, struct perf_evsel *evsel, double avg)
 {
 	FILE *output = stat_config.output;
-	double msecs = avg / 1e6;
+	double msecs = avg / NSEC_PER_MSEC;
 	const char *fmt_v, *fmt_n;
 	char name[25];
 
@@ -1445,7 +1470,7 @@ static void print_footer(void)
 	if (!null_run)
 		fprintf(output, "\n");
 	fprintf(output, " %17.9f seconds time elapsed",
-			avg_stats(&walltime_nsecs_stats)/1e9);
+			avg_stats(&walltime_nsecs_stats) / NSEC_PER_SEC);
 	if (run_count > 1) {
 		fprintf(output, "                                        ");
 		print_noise_pct(stddev_stats(&walltime_nsecs_stats),
@@ -1740,7 +1765,7 @@ static inline int perf_env__get_cpu(struct perf_env *env, struct cpu_map *map, i
 
 	cpu = map->map[idx];
 
-	if (cpu >= env->nr_cpus_online)
+	if (cpu >= env->nr_cpus_avail)
 		return -1;
 
 	return cpu;
@@ -2160,8 +2185,8 @@ static int process_stat_round_event(struct perf_tool *tool __maybe_unused,
 		update_stats(&walltime_nsecs_stats, stat_round->time);
 
 	if (stat_config.interval && stat_round->time) {
-		tsh.tv_sec  = stat_round->time / NSECS_PER_SEC;
-		tsh.tv_nsec = stat_round->time % NSECS_PER_SEC;
+		tsh.tv_sec  = stat_round->time / NSEC_PER_SEC;
+		tsh.tv_nsec = stat_round->time % NSEC_PER_SEC;
 		ts = &tsh;
 	}
 
@@ -2170,7 +2195,7 @@ static int process_stat_round_event(struct perf_tool *tool __maybe_unused,
 }
 
 static
-int process_stat_config_event(struct perf_tool *tool __maybe_unused,
+int process_stat_config_event(struct perf_tool *tool,
 			      union perf_event *event,
 			      struct perf_session *session __maybe_unused)
 {
@@ -2213,7 +2238,7 @@ static int set_maps(struct perf_stat *st)
 }
 
 static
-int process_thread_map_event(struct perf_tool *tool __maybe_unused,
+int process_thread_map_event(struct perf_tool *tool,
 			     union perf_event *event,
 			     struct perf_session *session __maybe_unused)
 {
@@ -2232,7 +2257,7 @@ int process_thread_map_event(struct perf_tool *tool __maybe_unused,
 }
 
 static
-int process_cpu_map_event(struct perf_tool *tool __maybe_unused,
+int process_cpu_map_event(struct perf_tool *tool,
 			  union perf_event *event,
 			  struct perf_session *session __maybe_unused)
 {
@@ -2420,8 +2445,9 @@ int cmd_stat(int argc, const char **argv, const char *prefix __maybe_unused)
 	} else if (big_num_opt == 0) /* User passed --no-big-num */
 		big_num = false;
 
+	/* Make system wide (-a) the default target. */
 	if (!argc && target__none(&target))
-		usage_with_options(stat_usage, stat_options);
+		target.system_wide = true;
 
 	if (run_count < 0) {
 		pr_err("Run count must be a positive number\n");
@@ -2513,7 +2539,7 @@ int cmd_stat(int argc, const char **argv, const char *prefix __maybe_unused)
 
 	status = 0;
 	for (run_idx = 0; forever || run_idx < run_count; run_idx++) {
-		if (run_count != 1 && verbose)
+		if (run_count != 1 && verbose > 0)
 			fprintf(output, "[ perf stat: executing run #%d ... ]\n",
 				run_idx + 1);
 

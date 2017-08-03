@@ -10,6 +10,8 @@
 
 #include <linux/auxvec.h>
 #include <linux/fs.h>
+#include <linux/mm_types.h>
+
 #include <uapi/linux/elf.h>
 
 #include <asm/current.h>
@@ -210,6 +212,9 @@ typedef elf_greg_t elf_gregset_t[ELF_NGREG];
 typedef double elf_fpreg_t;
 typedef elf_fpreg_t elf_fpregset_t[ELF_NFPREG];
 
+void mips_dump_regs32(u32 *uregs, const struct pt_regs *regs);
+void mips_dump_regs64(u64 *uregs, const struct pt_regs *regs);
+
 #ifdef CONFIG_32BIT
 /*
  * This is used to ensure we don't load something for the wrong architecture.
@@ -220,6 +225,9 @@ typedef elf_fpreg_t elf_fpregset_t[ELF_NFPREG];
  * These are used to set parameters in the core dumps.
  */
 #define ELF_CLASS	ELFCLASS32
+
+#define ELF_CORE_COPY_REGS(dest, regs) \
+	mips_dump_regs32((u32 *)&(dest), (regs));
 
 #endif /* CONFIG_32BIT */
 
@@ -233,6 +241,9 @@ typedef elf_fpreg_t elf_fpregset_t[ELF_NFPREG];
  * These are used to set parameters in the core dumps.
  */
 #define ELF_CLASS	ELFCLASS64
+
+#define ELF_CORE_COPY_REGS(dest, regs) \
+	mips_dump_regs64((u64 *)&(dest), (regs));
 
 #endif /* CONFIG_64BIT */
 
@@ -458,6 +469,7 @@ extern const char *__elf_platform;
 #define ELF_ET_DYN_BASE		(TASK_SIZE / 3 * 2)
 #endif
 
+/* update AT_VECTOR_SIZE_ARCH if the number of NEW_AUX_ENT entries changes */
 #define ARCH_DLINFO							\
 do {									\
 	NEW_AUX_ENT(AT_SYSINFO_EHDR,					\
@@ -497,5 +509,8 @@ extern int arch_check_elf(void *ehdr, bool has_interpreter, void *interp_ehdr,
 
 extern void mips_set_personality_nan(struct arch_elf_state *state);
 extern void mips_set_personality_fp(struct arch_elf_state *state);
+
+#define elf_read_implies_exec(ex, stk) mips_elf_read_implies_exec(&(ex), stk)
+extern int mips_elf_read_implies_exec(void *elf_ex, int exstack);
 
 #endif /* _ASM_ELF_H */

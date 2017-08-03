@@ -55,8 +55,9 @@ struct device_node *opal_node;
 static DEFINE_SPINLOCK(opal_write_lock);
 static struct atomic_notifier_head opal_msg_notifier_head[OPAL_MSG_TYPE_MAX];
 static uint32_t opal_heartbeat;
+static struct task_struct *kopald_tsk;
 
-static void opal_reinit_cores(void)
+void opal_configure_cores(void)
 {
 	/* Do the actual re-init, This will clobber all FPRs, VRs, etc...
 	 *
@@ -69,6 +70,10 @@ static void opal_reinit_cores(void)
 #else
 	opal_reinit_cpus(OPAL_REINIT_CPUS_HILE_LE);
 #endif
+
+	/* Restore some bits */
+	if (cur_cpu_spec->cpu_restore)
+		cur_cpu_spec->cpu_restore();
 }
 
 int __init early_init_dt_scan_opal(unsigned long node,
@@ -104,13 +109,6 @@ int __init early_init_dt_scan_opal(unsigned long node,
 	} else {
 		panic("OPAL != V3 detected, no longer supported.\n");
 	}
-
-	/* Reinit all cores with the right endian */
-	opal_reinit_cores();
-
-	/* Restore some bits */
-	if (cur_cpu_spec->cpu_restore)
-		cur_cpu_spec->cpu_restore();
 
 	return 1;
 }
@@ -397,33 +395,25 @@ static int opal_recover_mce(struct pt_regs *regs,
 					struct machine_check_event *evt)
 {
 	int recovered = 0;
-	uint64_t ea = get_mce_fault_addr(evt);
 
 	if (!(regs->msr & MSR_RI)) {
 		/* If MSR_RI isn't set, we cannot recover */
+		pr_err("Machine check interrupt unrecoverable: MSR(RI=0)\n");
 		recovered = 0;
 	} else if (evt->disposition == MCE_DISPOSITION_RECOVERED) {
 		/* Platform corrected itself */
 		recovered = 1;
-	} else if (ea && !is_kernel_addr(ea)) {
+	} else if (evt->severity == MCE_SEV_FATAL) {
+		/* Fatal machine check */
+		pr_err("Machine check interrupt is fatal\n");
+		recovered = 0;
+	} else if ((evt->severity == MCE_SEV_ERROR_SYNC) &&
+			(user_mode(regs) && !is_global_init(current))) {
 		/*
-		 * Faulting address is not in kernel text. We should be fine.
-		 * We need to find which process uses this address.
 		 * For now, kill the task if we have received exception when
 		 * in userspace.
 		 *
 		 * TODO: Queue up this address for hwpoisioning later.
-		 */
-		if (user_mode(regs) && !is_global_init(current)) {
-			_exception(SIGBUS, regs, BUS_MCEERR_AR, regs->nip);
-			recovered = 1;
-		} else
-			recovered = 0;
-	} else if (user_mode(regs) && !is_global_init(current) &&
-		evt->severity == MCE_SEV_ERROR_SYNC) {
-		/*
-		 * If we have received a synchronous error when in userspace
-		 * kill the task.
 		 */
 		_exception(SIGBUS, regs, BUS_MCEERR_AR, regs->nip);
 		recovered = 1;
@@ -633,26 +623,17 @@ static void __init opal_dump_region_init(void)
 			"rc = %d\n", rc);
 }
 
-static void opal_pdev_init(struct device_node *opal_node,
-		const char *compatible)
+static void opal_pdev_init(const char *compatible)
 {
 	struct device_node *np;
 
-	for_each_child_of_node(opal_node, np)
-		if (of_device_is_compatible(np, compatible))
-			of_platform_device_create(np, NULL, NULL);
-}
-
-static void opal_i2c_create_devs(void)
-{
-	struct device_node *np;
-
-	for_each_compatible_node(np, NULL, "ibm,opal-i2c")
+	for_each_compatible_node(np, NULL, compatible)
 		of_platform_device_create(np, NULL, NULL);
 }
 
 static int kopald(void *unused)
 {
+	unsigned long timeout = msecs_to_jiffies(opal_heartbeat) + 1;
 	__be64 events;
 
 	set_freezable();
@@ -660,10 +641,16 @@ static int kopald(void *unused)
 		try_to_freeze();
 		opal_poll_events(&events);
 		opal_handle_events(be64_to_cpu(events));
-		msleep_interruptible(opal_heartbeat);
+		schedule_timeout_interruptible(timeout);
 	} while (!kthread_should_stop());
 
 	return 0;
+}
+
+void opal_wake_poller(void)
+{
+	if (kopald_tsk)
+		wake_up_process(kopald_tsk);
 }
 
 static void opal_init_heartbeat(void)
@@ -674,7 +661,7 @@ static void opal_init_heartbeat(void)
 		opal_heartbeat = 0;
 
 	if (opal_heartbeat)
-		kthread_run(kopald, NULL, "kopald");
+		kopald_tsk = kthread_run(kopald, NULL, "kopald");
 }
 
 static int __init opal_init(void)
@@ -712,7 +699,7 @@ static int __init opal_init(void)
 	opal_hmi_handler_init();
 
 	/* Create i2c platform devices */
-	opal_i2c_create_devs();
+	opal_pdev_init("ibm,opal-i2c");
 
 	/* Setup a heatbeat thread if requested by OPAL */
 	opal_init_heartbeat();
@@ -747,9 +734,12 @@ static int __init opal_init(void)
 	}
 
 	/* Initialize platform devices: IPMI backend, PRD & flash interface */
-	opal_pdev_init(opal_node, "ibm,opal-ipmi");
-	opal_pdev_init(opal_node, "ibm,opal-flash");
-	opal_pdev_init(opal_node, "ibm,opal-prd");
+	opal_pdev_init("ibm,opal-ipmi");
+	opal_pdev_init("ibm,opal-flash");
+	opal_pdev_init("ibm,opal-prd");
+
+	/* Initialise platform device: oppanel interface */
+	opal_pdev_init("ibm,opal-oppanel");
 
 	/* Initialise OPAL kmsg dumper for flushing console on panic */
 	opal_kmsg_init();
@@ -876,6 +866,17 @@ int opal_error_code(int rc)
 	}
 }
 
+void powernv_set_nmmu_ptcr(unsigned long ptcr)
+{
+	int rc;
+
+	if (firmware_has_feature(FW_FEATURE_OPAL)) {
+		rc = opal_nmmu_set_ptcr(-1UL, ptcr);
+		if (rc != OPAL_SUCCESS && rc != OPAL_UNSUPPORTED)
+			pr_warn("%s: Unable to set nest mmu ptcr\n", __func__);
+	}
+}
+
 EXPORT_SYMBOL_GPL(opal_poll_events);
 EXPORT_SYMBOL_GPL(opal_rtc_read);
 EXPORT_SYMBOL_GPL(opal_rtc_write);
@@ -885,3 +886,7 @@ EXPORT_SYMBOL_GPL(opal_i2c_request);
 /* Export these symbols for PowerNV LED class driver */
 EXPORT_SYMBOL_GPL(opal_leds_get_ind);
 EXPORT_SYMBOL_GPL(opal_leds_set_ind);
+/* Export this symbol for PowerNV Operator Panel class driver */
+EXPORT_SYMBOL_GPL(opal_write_oppanel_async);
+/* Export this for KVM */
+EXPORT_SYMBOL_GPL(opal_int_set_mfrr);

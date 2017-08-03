@@ -1,4 +1,4 @@
-/* Copyright (C) 2013-2016 B.A.T.M.A.N. contributors:
+/* Copyright (C) 2013-2017  B.A.T.M.A.N. contributors:
  *
  * Antonio Quartulli
  *
@@ -18,10 +18,10 @@
 #ifndef _BATMAN_ADV_BATADV_V_OGM_H_
 #define _BATMAN_ADV_BATADV_V_OGM_H_
 
+#include "main.h"
+
 #include <linux/types.h>
 
-struct batadv_hard_iface;
-struct batadv_priv;
 struct sk_buff;
 
 int batadv_v_ogm_init(struct batadv_priv *bat_priv);

@@ -1,10 +1,18 @@
 #ifndef _ASM_POWERPC_BOOK3S_64_PGTABLE_H_
 #define _ASM_POWERPC_BOOK3S_64_PGTABLE_H_
 
+#include <asm-generic/5level-fixup.h>
+
+#ifndef __ASSEMBLY__
+#include <linux/mmdebug.h>
+#endif
+
 /*
  * Common bits between hash and Radix page table
  */
 #define _PAGE_BIT_SWAP_TYPE	0
+
+#define _PAGE_RO		0
 
 #define _PAGE_EXEC		0x00001 /* execute permission */
 #define _PAGE_WRITE		0x00002 /* write access allowed */
@@ -24,12 +32,22 @@
 #define _RPAGE_SW1		0x00800
 #define _RPAGE_SW2		0x00400
 #define _RPAGE_SW3		0x00200
+#define _RPAGE_RSV1		0x1000000000000000UL
+#define _RPAGE_RSV2		0x0800000000000000UL
+#define _RPAGE_RSV3		0x0400000000000000UL
+#define _RPAGE_RSV4		0x0200000000000000UL
+
 #ifdef CONFIG_MEM_SOFT_DIRTY
 #define _PAGE_SOFT_DIRTY	_RPAGE_SW3 /* software: software dirty tracking */
 #else
 #define _PAGE_SOFT_DIRTY	0x00000
 #endif
 #define _PAGE_SPECIAL		_RPAGE_SW2 /* software: special page */
+
+/*
+ * For P9 DD1 only, we need to track whether the pte's huge.
+ */
+#define _PAGE_LARGE	_RPAGE_RSV1
 
 
 #define _PAGE_PTE		(1ul << 62)	/* distinguishes PTEs from pointers */
@@ -318,7 +336,7 @@ static inline int __ptep_test_and_clear_young(struct mm_struct *mm,
 {
 	unsigned long old;
 
-	if ((pte_val(*ptep) & (_PAGE_ACCESSED | H_PAGE_HASHPTE)) == 0)
+	if ((pte_raw(*ptep) & cpu_to_be64(_PAGE_ACCESSED | H_PAGE_HASHPTE)) == 0)
 		return 0;
 	old = pte_update(mm, addr, ptep, _PAGE_ACCESSED, 0, 0);
 	return (old & _PAGE_ACCESSED) != 0;
@@ -332,24 +350,58 @@ static inline int __ptep_test_and_clear_young(struct mm_struct *mm,
 	__r;							\
 })
 
+static inline int __pte_write(pte_t pte)
+{
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_WRITE));
+}
+
+#ifdef CONFIG_NUMA_BALANCING
+#define pte_savedwrite pte_savedwrite
+static inline bool pte_savedwrite(pte_t pte)
+{
+	/*
+	 * Saved write ptes are prot none ptes that doesn't have
+	 * privileged bit sit. We mark prot none as one which has
+	 * present and pviliged bit set and RWX cleared. To mark
+	 * protnone which used to have _PAGE_WRITE set we clear
+	 * the privileged bit.
+	 */
+	return !(pte_raw(pte) & cpu_to_be64(_PAGE_RWX | _PAGE_PRIVILEGED));
+}
+#else
+#define pte_savedwrite pte_savedwrite
+static inline bool pte_savedwrite(pte_t pte)
+{
+	return false;
+}
+#endif
+
+static inline int pte_write(pte_t pte)
+{
+	return __pte_write(pte) || pte_savedwrite(pte);
+}
+
 #define __HAVE_ARCH_PTEP_SET_WRPROTECT
 static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr,
 				      pte_t *ptep)
 {
-
-	if ((pte_val(*ptep) & _PAGE_WRITE) == 0)
-		return;
-
-	pte_update(mm, addr, ptep, _PAGE_WRITE, 0, 0);
+	if (__pte_write(*ptep))
+		pte_update(mm, addr, ptep, _PAGE_WRITE, 0, 0);
+	else if (unlikely(pte_savedwrite(*ptep)))
+		pte_update(mm, addr, ptep, 0, _PAGE_PRIVILEGED, 0);
 }
 
 static inline void huge_ptep_set_wrprotect(struct mm_struct *mm,
 					   unsigned long addr, pte_t *ptep)
 {
-	if ((pte_val(*ptep) & _PAGE_WRITE) == 0)
-		return;
-
-	pte_update(mm, addr, ptep, _PAGE_WRITE, 0, 1);
+	/*
+	 * We should not find protnone for hugetlb, but this complete the
+	 * interface.
+	 */
+	if (__pte_write(*ptep))
+		pte_update(mm, addr, ptep, _PAGE_WRITE, 0, 1);
+	else if (unlikely(pte_savedwrite(*ptep)))
+		pte_update(mm, addr, ptep, 0, _PAGE_PRIVILEGED, 1);
 }
 
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR
@@ -360,22 +412,52 @@ static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
 	return __pte(old);
 }
 
+#define __HAVE_ARCH_PTEP_GET_AND_CLEAR_FULL
+static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm,
+					    unsigned long addr,
+					    pte_t *ptep, int full)
+{
+	if (full && radix_enabled()) {
+		/*
+		 * Let's skip the DD1 style pte update here. We know that
+		 * this is a full mm pte clear and hence can be sure there is
+		 * no parallel set_pte.
+		 */
+		return radix__ptep_get_and_clear_full(mm, addr, ptep, full);
+	}
+	return ptep_get_and_clear(mm, addr, ptep);
+}
+
+
 static inline void pte_clear(struct mm_struct *mm, unsigned long addr,
 			     pte_t * ptep)
 {
 	pte_update(mm, addr, ptep, ~0UL, 0, 0);
 }
-static inline int pte_write(pte_t pte)		{ return !!(pte_val(pte) & _PAGE_WRITE);}
-static inline int pte_dirty(pte_t pte)		{ return !!(pte_val(pte) & _PAGE_DIRTY); }
-static inline int pte_young(pte_t pte)		{ return !!(pte_val(pte) & _PAGE_ACCESSED); }
-static inline int pte_special(pte_t pte)	{ return !!(pte_val(pte) & _PAGE_SPECIAL); }
+
+static inline int pte_dirty(pte_t pte)
+{
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_DIRTY));
+}
+
+static inline int pte_young(pte_t pte)
+{
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_ACCESSED));
+}
+
+static inline int pte_special(pte_t pte)
+{
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_SPECIAL));
+}
+
 static inline pgprot_t pte_pgprot(pte_t pte)	{ return __pgprot(pte_val(pte) & PAGE_PROT_BITS); }
 
 #ifdef CONFIG_HAVE_ARCH_SOFT_DIRTY
 static inline bool pte_soft_dirty(pte_t pte)
 {
-	return !!(pte_val(pte) & _PAGE_SOFT_DIRTY);
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_SOFT_DIRTY));
 }
+
 static inline pte_t pte_mksoft_dirty(pte_t pte)
 {
 	return __pte(pte_val(pte) | _PAGE_SOFT_DIRTY);
@@ -388,21 +470,46 @@ static inline pte_t pte_clear_soft_dirty(pte_t pte)
 #endif /* CONFIG_HAVE_ARCH_SOFT_DIRTY */
 
 #ifdef CONFIG_NUMA_BALANCING
-/*
- * These work without NUMA balancing but the kernel does not care. See the
- * comment in include/asm-generic/pgtable.h . On powerpc, this will only
- * work for user pages and always return true for kernel pages.
- */
 static inline int pte_protnone(pte_t pte)
 {
-	return (pte_val(pte) & (_PAGE_PRESENT | _PAGE_PRIVILEGED)) ==
-		(_PAGE_PRESENT | _PAGE_PRIVILEGED);
+	return (pte_raw(pte) & cpu_to_be64(_PAGE_PRESENT | _PAGE_PTE | _PAGE_RWX)) ==
+		cpu_to_be64(_PAGE_PRESENT | _PAGE_PTE);
+}
+
+#define pte_mk_savedwrite pte_mk_savedwrite
+static inline pte_t pte_mk_savedwrite(pte_t pte)
+{
+	/*
+	 * Used by Autonuma subsystem to preserve the write bit
+	 * while marking the pte PROT_NONE. Only allow this
+	 * on PROT_NONE pte
+	 */
+	VM_BUG_ON((pte_raw(pte) & cpu_to_be64(_PAGE_PRESENT | _PAGE_RWX | _PAGE_PRIVILEGED)) !=
+		  cpu_to_be64(_PAGE_PRESENT | _PAGE_PRIVILEGED));
+	return __pte(pte_val(pte) & ~_PAGE_PRIVILEGED);
+}
+
+#define pte_clear_savedwrite pte_clear_savedwrite
+static inline pte_t pte_clear_savedwrite(pte_t pte)
+{
+	/*
+	 * Used by KSM subsystem to make a protnone pte readonly.
+	 */
+	VM_BUG_ON(!pte_protnone(pte));
+	return __pte(pte_val(pte) | _PAGE_PRIVILEGED);
+}
+#else
+#define pte_clear_savedwrite pte_clear_savedwrite
+static inline pte_t pte_clear_savedwrite(pte_t pte)
+{
+	VM_WARN_ON(1);
+	return __pte(pte_val(pte) & ~_PAGE_WRITE);
 }
 #endif /* CONFIG_NUMA_BALANCING */
 
 static inline int pte_present(pte_t pte)
 {
-	return !!(pte_val(pte) & _PAGE_PRESENT);
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_PRESENT));
 }
 /*
  * Conversion functions: convert a page and protection to a page entry,
@@ -425,6 +532,8 @@ static inline unsigned long pte_pfn(pte_t pte)
 /* Generic modifiers for PTE bits */
 static inline pte_t pte_wrprotect(pte_t pte)
 {
+	if (unlikely(pte_savedwrite(pte)))
+		return pte_clear_savedwrite(pte);
 	return __pte(pte_val(pte) & ~_PAGE_WRITE);
 }
 
@@ -474,7 +583,7 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 
 static inline bool pte_user(pte_t pte)
 {
-	return !(pte_val(pte) & _PAGE_PRIVILEGED);
+	return !(pte_raw(pte) & cpu_to_be64(_PAGE_PRIVILEGED));
 }
 
 /* Encode and de-code a swap entry */
@@ -517,10 +626,12 @@ static inline pte_t pte_swp_mksoft_dirty(pte_t pte)
 {
 	return __pte(pte_val(pte) | _PAGE_SWP_SOFT_DIRTY);
 }
+
 static inline bool pte_swp_soft_dirty(pte_t pte)
 {
-	return !!(pte_val(pte) & _PAGE_SWP_SOFT_DIRTY);
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_SWP_SOFT_DIRTY));
 }
+
 static inline pte_t pte_swp_clear_soft_dirty(pte_t pte)
 {
 	return __pte(pte_val(pte) & ~_PAGE_SWP_SOFT_DIRTY);
@@ -546,10 +657,12 @@ static inline bool check_pte_access(unsigned long access, unsigned long ptev)
  * Generic functions with hash/radix callbacks
  */
 
-static inline void __ptep_set_access_flags(pte_t *ptep, pte_t entry)
+static inline void __ptep_set_access_flags(struct mm_struct *mm,
+					   pte_t *ptep, pte_t entry,
+					   unsigned long address)
 {
 	if (radix_enabled())
-		return radix__ptep_set_access_flags(ptep, entry);
+		return radix__ptep_set_access_flags(mm, ptep, entry, address);
 	return hash__ptep_set_access_flags(ptep, entry);
 }
 
@@ -626,8 +739,16 @@ static inline void pmd_clear(pmd_t *pmdp)
 	*pmdp = __pmd(0);
 }
 
-#define pmd_none(pmd)		(!pmd_val(pmd))
-#define	pmd_present(pmd)	(!pmd_none(pmd))
+static inline int pmd_none(pmd_t pmd)
+{
+	return !pmd_raw(pmd);
+}
+
+static inline int pmd_present(pmd_t pmd)
+{
+
+	return !pmd_none(pmd);
+}
 
 static inline int pmd_bad(pmd_t pmd)
 {
@@ -646,19 +767,26 @@ static inline void pud_clear(pud_t *pudp)
 	*pudp = __pud(0);
 }
 
-#define pud_none(pud)		(!pud_val(pud))
-#define pud_present(pud)	(pud_val(pud) != 0)
+static inline int pud_none(pud_t pud)
+{
+	return !pud_raw(pud);
+}
+
+static inline int pud_present(pud_t pud)
+{
+	return !pud_none(pud);
+}
 
 extern struct page *pud_page(pud_t pud);
 extern struct page *pmd_page(pmd_t pmd);
 static inline pte_t pud_pte(pud_t pud)
 {
-	return __pte(pud_val(pud));
+	return __pte_raw(pud_raw(pud));
 }
 
 static inline pud_t pte_pud(pte_t pte)
 {
-	return __pud(pte_val(pte));
+	return __pud_raw(pte_raw(pte));
 }
 #define pud_write(pud)		pte_write(pud_pte(pud))
 
@@ -681,17 +809,24 @@ static inline void pgd_clear(pgd_t *pgdp)
 	*pgdp = __pgd(0);
 }
 
-#define pgd_none(pgd)		(!pgd_val(pgd))
-#define pgd_present(pgd)	(!pgd_none(pgd))
+static inline int pgd_none(pgd_t pgd)
+{
+	return !pgd_raw(pgd);
+}
+
+static inline int pgd_present(pgd_t pgd)
+{
+	return !pgd_none(pgd);
+}
 
 static inline pte_t pgd_pte(pgd_t pgd)
 {
-	return __pte(pgd_val(pgd));
+	return __pte_raw(pgd_raw(pgd));
 }
 
 static inline pgd_t pte_pgd(pte_t pte)
 {
-	return __pgd(pte_val(pte));
+	return __pgd_raw(pte_raw(pte));
 }
 
 static inline int pgd_bad(pgd_t pgd)
@@ -745,9 +880,6 @@ extern struct page *pgd_page(pgd_t pgd);
 #define pgd_ERROR(e) \
 	pr_err("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
 
-void pgtable_cache_add(unsigned shift, void (*ctor)(void *));
-void pgtable_cache_init(void);
-
 static inline int map_kernel_page(unsigned long ea, unsigned long pa,
 				  unsigned long flags)
 {
@@ -783,12 +915,12 @@ struct page *realmode_pfn_to_page(unsigned long pfn);
 
 static inline pte_t pmd_pte(pmd_t pmd)
 {
-	return __pte(pmd_val(pmd));
+	return __pte_raw(pmd_raw(pmd));
 }
 
 static inline pmd_t pte_pmd(pte_t pte)
 {
-	return __pmd(pte_val(pte));
+	return __pmd_raw(pte_raw(pte));
 }
 
 static inline pte_t *pmdp_ptep(pmd_t *pmd)
@@ -804,6 +936,8 @@ static inline pte_t *pmdp_ptep(pmd_t *pmd)
 #define pmd_mkclean(pmd)	pte_pmd(pte_mkclean(pmd_pte(pmd)))
 #define pmd_mkyoung(pmd)	pte_pmd(pte_mkyoung(pmd_pte(pmd)))
 #define pmd_mkwrite(pmd)	pte_pmd(pte_mkwrite(pmd_pte(pmd)))
+#define pmd_mk_savedwrite(pmd)	pte_pmd(pte_mk_savedwrite(pmd_pte(pmd)))
+#define pmd_clear_savedwrite(pmd)	pte_pmd(pte_clear_savedwrite(pmd_pte(pmd)))
 
 #ifdef CONFIG_HAVE_ARCH_SOFT_DIRTY
 #define pmd_soft_dirty(pmd)    pte_soft_dirty(pmd_pte(pmd))
@@ -820,6 +954,8 @@ static inline int pmd_protnone(pmd_t pmd)
 
 #define __HAVE_ARCH_PMD_WRITE
 #define pmd_write(pmd)		pte_write(pmd_pte(pmd))
+#define __pmd_write(pmd)	__pte_write(pmd_pte(pmd))
+#define pmd_savedwrite(pmd)	pte_savedwrite(pmd_pte(pmd))
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 extern pmd_t pfn_pmd(unsigned long pfn, pgprot_t pgprot);
@@ -849,7 +985,7 @@ pmd_hugepage_update(struct mm_struct *mm, unsigned long addr, pmd_t *pmdp,
 
 static inline int pmd_large(pmd_t pmd)
 {
-	return !!(pmd_val(pmd) & _PAGE_PTE);
+	return !!(pmd_raw(pmd) & cpu_to_be64(_PAGE_PTE));
 }
 
 static inline pmd_t pmd_mknotpresent(pmd_t pmd)
@@ -865,7 +1001,7 @@ static inline int __pmdp_test_and_clear_young(struct mm_struct *mm,
 {
 	unsigned long old;
 
-	if ((pmd_val(*pmdp) & (_PAGE_ACCESSED | H_PAGE_HASHPTE)) == 0)
+	if ((pmd_raw(*pmdp) & cpu_to_be64(_PAGE_ACCESSED | H_PAGE_HASHPTE)) == 0)
 		return 0;
 	old = pmd_hugepage_update(mm, addr, pmdp, _PAGE_ACCESSED, 0);
 	return ((old & _PAGE_ACCESSED) != 0);
@@ -875,11 +1011,10 @@ static inline int __pmdp_test_and_clear_young(struct mm_struct *mm,
 static inline void pmdp_set_wrprotect(struct mm_struct *mm, unsigned long addr,
 				      pmd_t *pmdp)
 {
-
-	if ((pmd_val(*pmdp) & _PAGE_WRITE) == 0)
-		return;
-
-	pmd_hugepage_update(mm, addr, pmdp, _PAGE_WRITE, 0);
+	if (__pmd_write((*pmdp)))
+		pmd_hugepage_update(mm, addr, pmdp, _PAGE_WRITE, 0);
+	else if (unlikely(pmd_savedwrite(*pmdp)))
+		pmd_hugepage_update(mm, addr, pmdp, 0, _PAGE_PRIVILEGED);
 }
 
 static inline int pmd_trans_huge(pmd_t pmd)
@@ -965,7 +1100,8 @@ static inline void pmdp_huge_split_prepare(struct vm_area_struct *vma,
 #define pmd_move_must_withdraw pmd_move_must_withdraw
 struct spinlock;
 static inline int pmd_move_must_withdraw(struct spinlock *new_pmd_ptl,
-					 struct spinlock *old_pmd_ptl)
+					 struct spinlock *old_pmd_ptl,
+					 struct vm_area_struct *vma)
 {
 	if (radix_enabled())
 		return false;
@@ -976,6 +1112,16 @@ static inline int pmd_move_must_withdraw(struct spinlock *new_pmd_ptl,
 	 */
 	return true;
 }
+
+
+#define arch_needs_pgtable_deposit arch_needs_pgtable_deposit
+static inline bool arch_needs_pgtable_deposit(void)
+{
+	if (radix_enabled())
+		return false;
+	return true;
+}
+
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_POWERPC_BOOK3S_64_PGTABLE_H_ */

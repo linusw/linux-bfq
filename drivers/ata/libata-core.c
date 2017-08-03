@@ -69,6 +69,7 @@
 #include <asm/unaligned.h>
 #include <linux/cdrom.h>
 #include <linux/ratelimit.h>
+#include <linux/leds.h>
 #include <linux/pm_runtime.h>
 #include <linux/platform_device.h>
 
@@ -128,7 +129,7 @@ static int ata_force_tbl_size;
 static char ata_force_param_buf[PAGE_SIZE] __initdata;
 /* param_buf is thrown away after initialization, disallow read */
 module_param_string(force, ata_force_param_buf, sizeof(ata_force_param_buf), 0);
-MODULE_PARM_DESC(force, "Force ATA configurations including cable type, link speed and transfer mode (see Documentation/kernel-parameters.txt for details)");
+MODULE_PARM_DESC(force, "Force ATA configurations including cable type, link speed and transfer mode (see Documentation/admin-guide/kernel-parameters.rst for details)");
 
 static int atapi_enabled = 1;
 module_param(atapi_enabled, int, 0444);
@@ -738,6 +739,7 @@ u64 ata_tf_read_block(const struct ata_taskfile *tf, struct ata_device *dev)
  *	@n_block: Number of blocks
  *	@tf_flags: RW/FUA etc...
  *	@tag: tag
+ *	@class: IO priority class
  *
  *	LOCKING:
  *	None.
@@ -752,7 +754,7 @@ u64 ata_tf_read_block(const struct ata_taskfile *tf, struct ata_device *dev)
  */
 int ata_build_rw_tf(struct ata_taskfile *tf, struct ata_device *dev,
 		    u64 block, u32 n_block, unsigned int tf_flags,
-		    unsigned int tag)
+		    unsigned int tag, int class)
 {
 	tf->flags |= ATA_TFLAG_ISADDR | ATA_TFLAG_DEVICE;
 	tf->flags |= tf_flags;
@@ -784,6 +786,12 @@ int ata_build_rw_tf(struct ata_taskfile *tf, struct ata_device *dev,
 		tf->device = ATA_LBA;
 		if (tf->flags & ATA_TFLAG_FUA)
 			tf->device |= 1 << 7;
+
+		if (dev->flags & ATA_DFLAG_NCQ_PRIO) {
+			if (class == IOPRIO_CLASS_RT)
+				tf->hob_nsect |= ATA_PRIO_HIGH <<
+						 ATA_SHIFT_PRIO;
+		}
 	} else if (dev->flags & ATA_DFLAG_LBA) {
 		tf->flags |= ATA_TFLAG_LBA;
 
@@ -1238,7 +1246,7 @@ static int ata_read_native_max_address(struct ata_device *dev, u64 *max_sectors)
 	} else
 		tf.command = ATA_CMD_READ_NATIVE_MAX;
 
-	tf.protocol |= ATA_PROT_NODATA;
+	tf.protocol = ATA_PROT_NODATA;
 	tf.device |= ATA_LBA;
 
 	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_NONE, NULL, 0, 0);
@@ -1297,7 +1305,7 @@ static int ata_set_max_sectors(struct ata_device *dev, u64 new_sectors)
 		tf.device |= (new_sectors >> 24) & 0xf;
 	}
 
-	tf.protocol |= ATA_PROT_NODATA;
+	tf.protocol = ATA_PROT_NODATA;
 	tf.device |= ATA_LBA;
 
 	tf.lbal = (new_sectors >> 0) & 0xff;
@@ -1694,6 +1702,8 @@ unsigned ata_exec_internal_sg(struct ata_device *dev,
 
 		if (qc->err_mask & ~AC_ERR_OTHER)
 			qc->err_mask &= ~AC_ERR_OTHER;
+	} else if (qc->tf.command == ATA_CMD_REQ_SENSE_DATA) {
+		qc->result_tf.command |= ATA_SENSE;
 	}
 
 	/* finish up */
@@ -2155,6 +2165,37 @@ static void ata_dev_config_ncq_non_data(struct ata_device *dev)
 	}
 }
 
+static void ata_dev_config_ncq_prio(struct ata_device *dev)
+{
+	struct ata_port *ap = dev->link->ap;
+	unsigned int err_mask;
+
+	if (!(dev->flags & ATA_DFLAG_NCQ_PRIO_ENABLE)) {
+		dev->flags &= ~ATA_DFLAG_NCQ_PRIO;
+		return;
+	}
+
+	err_mask = ata_read_log_page(dev,
+				     ATA_LOG_SATA_ID_DEV_DATA,
+				     ATA_LOG_SATA_SETTINGS,
+				     ap->sector_buf,
+				     1);
+	if (err_mask) {
+		ata_dev_dbg(dev,
+			    "failed to get Identify Device data, Emask 0x%x\n",
+			    err_mask);
+		return;
+	}
+
+	if (ap->sector_buf[ATA_LOG_NCQ_PRIO_OFFSET] & BIT(3)) {
+		dev->flags |= ATA_DFLAG_NCQ_PRIO;
+	} else {
+		dev->flags &= ~ATA_DFLAG_NCQ_PRIO;
+		ata_dev_dbg(dev, "SATA page does not support priority\n");
+	}
+
+}
+
 static int ata_dev_config_ncq(struct ata_device *dev,
 			       char *desc, size_t desc_sz)
 {
@@ -2204,6 +2245,8 @@ static int ata_dev_config_ncq(struct ata_device *dev,
 			ata_dev_config_ncq_send_recv(dev);
 		if (ata_id_has_ncq_non_data(dev->id))
 			ata_dev_config_ncq_non_data(dev);
+		if (ata_id_has_ncq_prio(dev->id))
+			ata_dev_config_ncq_prio(dev);
 	}
 
 	return 0;
@@ -4315,10 +4358,10 @@ static const struct ata_blacklist_entry ata_device_blacklist [] = {
 	{ "ST380013AS",		"3.20",		ATA_HORKAGE_MAX_SEC_1024 },
 
 	/*
-	 * Device times out with higher max sects.
+	 * These devices time out with higher max sects.
 	 * https://bugzilla.kernel.org/show_bug.cgi?id=121671
 	 */
-	{ "LITEON CX1-JB256-HP", NULL,		ATA_HORKAGE_MAX_SEC_1024 },
+	{ "LITEON CX1-JB*-HP",	NULL,		ATA_HORKAGE_MAX_SEC_1024 },
 
 	/* Devices we expect to fail diagnostics */
 
@@ -4773,32 +4816,6 @@ static unsigned int ata_dev_init_params(struct ata_device *dev,
 }
 
 /**
- *	ata_sg_clean - Unmap DMA memory associated with command
- *	@qc: Command containing DMA memory to be released
- *
- *	Unmap all mapped DMA memory associated with this command.
- *
- *	LOCKING:
- *	spin_lock_irqsave(host lock)
- */
-void ata_sg_clean(struct ata_queued_cmd *qc)
-{
-	struct ata_port *ap = qc->ap;
-	struct scatterlist *sg = qc->sg;
-	int dir = qc->dma_dir;
-
-	WARN_ON_ONCE(sg == NULL);
-
-	VPRINTK("unmapping %u sg elements\n", qc->n_elem);
-
-	if (qc->n_elem)
-		dma_unmap_sg(ap->dev, sg, qc->orig_n_elem, dir);
-
-	qc->flags &= ~ATA_QCFLAG_DMAMAP;
-	qc->sg = NULL;
-}
-
-/**
  *	atapi_check_dma - Check whether ATAPI DMA can be supported
  *	@qc: Metadata associated with taskfile to check
  *
@@ -4848,7 +4865,7 @@ int ata_std_qc_defer(struct ata_queued_cmd *qc)
 {
 	struct ata_link *link = qc->dev->link;
 
-	if (qc->tf.protocol == ATA_PROT_NCQ) {
+	if (ata_is_ncq(qc->tf.protocol)) {
 		if (!ata_tag_valid(link->active_tag))
 			return 0;
 	} else {
@@ -4882,6 +4899,34 @@ void ata_sg_init(struct ata_queued_cmd *qc, struct scatterlist *sg,
 	qc->cursg = qc->sg;
 }
 
+#ifdef CONFIG_HAS_DMA
+
+/**
+ *	ata_sg_clean - Unmap DMA memory associated with command
+ *	@qc: Command containing DMA memory to be released
+ *
+ *	Unmap all mapped DMA memory associated with this command.
+ *
+ *	LOCKING:
+ *	spin_lock_irqsave(host lock)
+ */
+void ata_sg_clean(struct ata_queued_cmd *qc)
+{
+	struct ata_port *ap = qc->ap;
+	struct scatterlist *sg = qc->sg;
+	int dir = qc->dma_dir;
+
+	WARN_ON_ONCE(sg == NULL);
+
+	VPRINTK("unmapping %u sg elements\n", qc->n_elem);
+
+	if (qc->n_elem)
+		dma_unmap_sg(ap->dev, sg, qc->orig_n_elem, dir);
+
+	qc->flags &= ~ATA_QCFLAG_DMAMAP;
+	qc->sg = NULL;
+}
+
 /**
  *	ata_sg_setup - DMA-map the scatter-gather table associated with a command.
  *	@qc: Command with scatter-gather table to be mapped.
@@ -4913,6 +4958,13 @@ static int ata_sg_setup(struct ata_queued_cmd *qc)
 
 	return 0;
 }
+
+#else /* !CONFIG_HAS_DMA */
+
+static inline void ata_sg_clean(struct ata_queued_cmd *qc) {}
+static inline int ata_sg_setup(struct ata_queued_cmd *qc) { return -1; }
+
+#endif /* !CONFIG_HAS_DMA */
 
 /**
  *	swap_buf_le16 - swap halves of 16-bit words in place
@@ -5013,7 +5065,7 @@ void __ata_qc_complete(struct ata_queued_cmd *qc)
 		ata_sg_clean(qc);
 
 	/* command should be marked inactive atomically with qc completion */
-	if (qc->tf.protocol == ATA_PROT_NCQ) {
+	if (ata_is_ncq(qc->tf.protocol)) {
 		link->sactive &= ~(1 << qc->tag);
 		if (!link->sactive)
 			ap->nr_active_links--;
@@ -5050,7 +5102,7 @@ static void ata_verify_xfer(struct ata_queued_cmd *qc)
 {
 	struct ata_device *dev = qc->dev;
 
-	if (ata_is_nodata(qc->tf.protocol))
+	if (!ata_is_data(qc->tf.protocol))
 		return;
 
 	if ((dev->mwdma_mask || dev->udma_mask) && ata_is_pio(qc->tf.protocol))
@@ -5077,6 +5129,9 @@ static void ata_verify_xfer(struct ata_queued_cmd *qc)
 void ata_qc_complete(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
+
+	/* Trigger the LED (if available) */
+	ledtrig_disk_activity();
 
 	/* XXX: New EH and old EH use different mechanisms to
 	 * synchronize EH with regular execution path.
@@ -5133,7 +5188,9 @@ void ata_qc_complete(struct ata_queued_cmd *qc)
 		switch (qc->tf.command) {
 		case ATA_CMD_SET_FEATURES:
 			if (qc->tf.feature != SETFEATURES_WC_ON &&
-			    qc->tf.feature != SETFEATURES_WC_OFF)
+			    qc->tf.feature != SETFEATURES_WC_OFF &&
+			    qc->tf.feature != SETFEATURES_RA_ON &&
+			    qc->tf.feature != SETFEATURES_RA_OFF)
 				break;
 			/* fall through */
 		case ATA_CMD_INIT_DEV_PARAMS: /* CHS translation changed */

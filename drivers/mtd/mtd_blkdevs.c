@@ -31,7 +31,7 @@
 #include <linux/spinlock.h>
 #include <linux/hdreg.h>
 #include <linux/mutex.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "mtdcore.h"
 
@@ -84,26 +84,23 @@ static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 	nsect = blk_rq_cur_bytes(req) >> tr->blkshift;
 	buf = bio_data(req->bio);
 
-	if (req->cmd_type != REQ_TYPE_FS)
-		return -EIO;
-
-	if (req->cmd_flags & REQ_FLUSH)
+	if (req_op(req) == REQ_OP_FLUSH)
 		return tr->flush(dev);
 
 	if (blk_rq_pos(req) + blk_rq_cur_sectors(req) >
 	    get_capacity(req->rq_disk))
 		return -EIO;
 
-	if (req->cmd_flags & REQ_DISCARD)
+	switch (req_op(req)) {
+	case REQ_OP_DISCARD:
 		return tr->discard(dev, block, nsect);
-
-	if (rq_data_dir(req) == READ) {
+	case REQ_OP_READ:
 		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
 			if (tr->readsect(dev, block, buf))
 				return -EIO;
 		rq_flush_dcache_pages(req);
 		return 0;
-	} else {
+	case REQ_OP_WRITE:
 		if (!tr->writesect)
 			return -EIO;
 
@@ -112,6 +109,8 @@ static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 			if (tr->writesect(dev, block, buf))
 				return -EIO;
 		return 0;
+	default:
+		return -EIO;
 	}
 }
 
@@ -431,12 +430,10 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 		goto error4;
 	INIT_WORK(&new->work, mtd_blktrans_work);
 
-	gd->driverfs_dev = &new->mtd->dev;
-
 	if (new->readonly)
 		set_disk_ro(gd, 1);
 
-	add_disk(gd);
+	device_add_disk(&new->mtd->dev, gd);
 
 	if (new->disk_attributes) {
 		ret = sysfs_create_group(&disk_to_dev(gd)->kobj,

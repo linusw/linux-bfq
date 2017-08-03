@@ -69,6 +69,12 @@
 
 	ahb {
 		apb {
+			uart0: serial@f8004000 {
+				atmel,use-dma-rx;
+				atmel,use-dma-tx;
+				status = "okay";
+			};
+
 			spi0: spi@f8010000 {
 				cs-gpios = <&pioC 3 0>, <0>, <0>, <0>;
 				status = "okay";
@@ -110,6 +116,8 @@
 			};
 
 			usart3: serial@fc00c000 {
+				atmel,use-dma-rx;
+				atmel,use-dma-tx;
 				status = "okay";
 			};
 
@@ -252,7 +260,7 @@
 		};
 	};
 
-	vcc_3v3_reg: fixedregulator@0 {
+	vcc_3v3_reg: fixedregulator_3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "VCC 3V3";
 		regulator-min-microvolt = <3300000>;
@@ -261,7 +269,7 @@
 		regulator-always-on;
 	};
 
-	vcc_mmc1_reg: fixedregulator@1 {
+	vcc_mmc1_reg: fixedregulator_mmc1 {
 		compatible = "regulator-fixed";
 		gpio = <&pioE 4 GPIO_ACTIVE_LOW>;
 		regulator-name = "VDD MCI1";

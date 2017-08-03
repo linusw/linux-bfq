@@ -34,12 +34,20 @@
  */
 #define HVC_SET_VECTORS 1
 
+/*
+ * HVC_SOFT_RESTART - CPU soft reset, used by the cpu_soft_restart routine.
+ */
+#define HVC_SOFT_RESTART 2
+
 #define BOOT_CPU_MODE_EL1	(0xe11)
 #define BOOT_CPU_MODE_EL2	(0xe12)
 
 #ifndef __ASSEMBLY__
 
 #include <asm/ptrace.h>
+#include <asm/sections.h>
+#include <asm/sysreg.h>
+#include <asm/cpufeature.h>
 
 /*
  * __boot_cpu_mode records what mode CPUs were booted in.
@@ -70,10 +78,15 @@ static inline bool is_hyp_mode_mismatched(void)
 
 static inline bool is_kernel_in_hyp_mode(void)
 {
-	u64 el;
+	return read_sysreg(CurrentEL) == CurrentEL_EL2;
+}
 
-	asm("mrs %0, CurrentEL" : "=r" (el));
-	return el == CurrentEL_EL2;
+static inline bool has_vhe(void)
+{
+	if (cpus_have_const_cap(ARM64_HAS_VIRT_HOST_EXTN))
+		return true;
+
+	return false;
 }
 
 #ifdef CONFIG_ARM64_VHE
@@ -81,10 +94,6 @@ extern void verify_cpu_run_el(void);
 #else
 static inline void verify_cpu_run_el(void) {}
 #endif
-
-/* The section containing the hypervisor text */
-extern char __hyp_text_start[];
-extern char __hyp_text_end[];
 
 #endif /* __ASSEMBLY__ */
 

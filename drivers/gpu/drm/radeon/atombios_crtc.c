@@ -276,14 +276,14 @@ void atombios_crtc_dpms(struct drm_crtc *crtc, int mode)
 			atombios_enable_crtc_memreq(crtc, ATOM_ENABLE);
 		atombios_blank_crtc(crtc, ATOM_DISABLE);
 		if (dev->num_crtcs > radeon_crtc->crtc_id)
-			drm_vblank_on(dev, radeon_crtc->crtc_id);
+			drm_crtc_vblank_on(crtc);
 		radeon_crtc_load_lut(crtc);
 		break;
 	case DRM_MODE_DPMS_STANDBY:
 	case DRM_MODE_DPMS_SUSPEND:
 	case DRM_MODE_DPMS_OFF:
 		if (dev->num_crtcs > radeon_crtc->crtc_id)
-			drm_vblank_off(dev, radeon_crtc->crtc_id);
+			drm_crtc_vblank_off(crtc);
 		if (radeon_crtc->enabled)
 			atombios_blank_crtc(crtc, ATOM_ENABLE);
 		if (ASIC_IS_DCE3(rdev) && !ASIC_IS_DCE6(rdev))
@@ -627,7 +627,9 @@ static u32 atombios_adjust_pll(struct drm_crtc *crtc,
 			if (radeon_crtc->ss.refdiv) {
 				radeon_crtc->pll_flags |= RADEON_PLL_USE_REF_DIV;
 				radeon_crtc->pll_reference_div = radeon_crtc->ss.refdiv;
-				if (rdev->family >= CHIP_RV770)
+				if (ASIC_IS_AVIVO(rdev) &&
+				    rdev->family != CHIP_RS780 &&
+				    rdev->family != CHIP_RS880)
 					radeon_crtc->pll_flags |= RADEON_PLL_USE_FRAC_FB_DIV;
 			}
 		}
@@ -1154,6 +1156,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	u32 tmp, viewport_w, viewport_h;
 	int r;
 	bool bypass_lut = false;
+	struct drm_format_name_buf format_name;
 
 	/* no fb bound */
 	if (!atomic && !crtc->primary->fb) {
@@ -1192,7 +1195,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	radeon_bo_get_tiling_flags(rbo, &tiling_flags, NULL);
 	radeon_bo_unreserve(rbo);
 
-	switch (target_fb->pixel_format) {
+	switch (target_fb->format->format) {
 	case DRM_FORMAT_C8:
 		fb_format = (EVERGREEN_GRPH_DEPTH(EVERGREEN_GRPH_DEPTH_8BPP) |
 			     EVERGREEN_GRPH_FORMAT(EVERGREEN_GRPH_FORMAT_INDEXED));
@@ -1258,7 +1261,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 		break;
 	default:
 		DRM_ERROR("Unsupported screen format %s\n",
-			  drm_get_format_name(target_fb->pixel_format));
+		          drm_get_format_name(target_fb->format->format, &format_name));
 		return -EINVAL;
 	}
 
@@ -1274,7 +1277,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 
 				/* Calculate the macrotile mode index. */
 				tile_split_bytes = 64 << tile_split;
-				tileb = 8 * 8 * target_fb->bits_per_pixel / 8;
+				tileb = 8 * 8 * target_fb->format->cpp[0];
 				tileb = min(tile_split_bytes, tileb);
 
 				for (index = 0; tileb > 64; index++)
@@ -1282,13 +1285,14 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 
 				if (index >= 16) {
 					DRM_ERROR("Wrong screen bpp (%u) or tile split (%u)\n",
-						  target_fb->bits_per_pixel, tile_split);
+						  target_fb->format->cpp[0] * 8,
+						  tile_split);
 					return -EINVAL;
 				}
 
 				num_banks = (rdev->config.cik.macrotile_mode_array[index] >> 6) & 0x3;
 			} else {
-				switch (target_fb->bits_per_pixel) {
+				switch (target_fb->format->cpp[0] * 8) {
 				case 8:
 					index = 10;
 					break;
@@ -1411,7 +1415,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(EVERGREEN_GRPH_X_END + radeon_crtc->crtc_offset, target_fb->width);
 	WREG32(EVERGREEN_GRPH_Y_END + radeon_crtc->crtc_offset, target_fb->height);
 
-	fb_pitch_pixels = target_fb->pitches[0] / (target_fb->bits_per_pixel / 8);
+	fb_pitch_pixels = target_fb->pitches[0] / target_fb->format->cpp[0];
 	WREG32(EVERGREEN_GRPH_PITCH + radeon_crtc->crtc_offset, fb_pitch_pixels);
 	WREG32(EVERGREEN_GRPH_ENABLE + radeon_crtc->crtc_offset, 1);
 
@@ -1433,8 +1437,8 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(EVERGREEN_VIEWPORT_SIZE + radeon_crtc->crtc_offset,
 	       (viewport_w << 16) | viewport_h);
 
-	/* set pageflip to happen only at start of vblank interval (front porch) */
-	WREG32(EVERGREEN_MASTER_UPDATE_MODE + radeon_crtc->crtc_offset, 3);
+	/* set pageflip to happen anywhere in vblank interval */
+	WREG32(EVERGREEN_MASTER_UPDATE_MODE + radeon_crtc->crtc_offset, 0);
 
 	if (!atomic && fb && fb != crtc->primary->fb) {
 		radeon_fb = to_radeon_framebuffer(fb);
@@ -1469,6 +1473,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	u32 viewport_w, viewport_h;
 	int r;
 	bool bypass_lut = false;
+	struct drm_format_name_buf format_name;
 
 	/* no fb bound */
 	if (!atomic && !crtc->primary->fb) {
@@ -1506,7 +1511,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	radeon_bo_get_tiling_flags(rbo, &tiling_flags, NULL);
 	radeon_bo_unreserve(rbo);
 
-	switch (target_fb->pixel_format) {
+	switch (target_fb->format->format) {
 	case DRM_FORMAT_C8:
 		fb_format =
 		    AVIVO_D1GRPH_CONTROL_DEPTH_8BPP |
@@ -1559,7 +1564,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 		break;
 	default:
 		DRM_ERROR("Unsupported screen format %s\n",
-			  drm_get_format_name(target_fb->pixel_format));
+		          drm_get_format_name(target_fb->format->format, &format_name));
 		return -EINVAL;
 	}
 
@@ -1617,7 +1622,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(AVIVO_D1GRPH_X_END + radeon_crtc->crtc_offset, target_fb->width);
 	WREG32(AVIVO_D1GRPH_Y_END + radeon_crtc->crtc_offset, target_fb->height);
 
-	fb_pitch_pixels = target_fb->pitches[0] / (target_fb->bits_per_pixel / 8);
+	fb_pitch_pixels = target_fb->pitches[0] / target_fb->format->cpp[0];
 	WREG32(AVIVO_D1GRPH_PITCH + radeon_crtc->crtc_offset, fb_pitch_pixels);
 	WREG32(AVIVO_D1GRPH_ENABLE + radeon_crtc->crtc_offset, 1);
 

@@ -437,10 +437,9 @@ static void stop_streaming(struct vb2_queue *vq)
 
 static int queue_setup(struct vb2_queue *vq,
 		       unsigned int *num_buffers, unsigned int *num_planes,
-		       unsigned int sizes[], void *allocators[])
+		       unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct camif_vp *vp = vb2_get_drv_priv(vq);
-	struct camif_dev *camif = vp->camif;
 	struct camif_frame *frame = &vp->out_frame;
 	const struct camif_fmt *fmt = vp->out_fmt;
 	unsigned int size;
@@ -449,7 +448,6 @@ static int queue_setup(struct vb2_queue *vq,
 		return -EINVAL;
 
 	size = (frame->f_width * frame->f_height * fmt->depth) / 8;
-	allocators[0] = camif->alloc_ctx;
 
 	if (*num_planes)
 		return sizes[0] < size ? -EINVAL : 0;
@@ -858,13 +856,13 @@ static int s3c_camif_streamon(struct file *file, void *priv,
 	if (s3c_vp_active(vp))
 		return 0;
 
-	ret = media_entity_pipeline_start(sensor, camif->m_pipeline);
+	ret = media_pipeline_start(sensor, camif->m_pipeline);
 	if (ret < 0)
 		return ret;
 
 	ret = camif_pipeline_validate(camif);
 	if (ret < 0) {
-		media_entity_pipeline_stop(sensor);
+		media_pipeline_stop(sensor);
 		return ret;
 	}
 
@@ -888,7 +886,7 @@ static int s3c_camif_streamoff(struct file *file, void *priv,
 
 	ret = vb2_streamoff(&vp->vb_queue, type);
 	if (ret == 0)
-		media_entity_pipeline_stop(&camif->sensor.sd->entity);
+		media_pipeline_stop(&camif->sensor.sd->entity);
 	return ret;
 }
 
@@ -1138,6 +1136,7 @@ int s3c_camif_register_video_node(struct camif_dev *camif, int idx)
 	q->drv_priv = vp;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->lock = &vp->camif->lock;
+	q->dev = camif->v4l2_dev.dev;
 
 	ret = vb2_queue_init(q);
 	if (ret)
@@ -1489,7 +1488,7 @@ static const struct v4l2_subdev_pad_ops s3c_camif_subdev_pad_ops = {
 	.set_fmt = s3c_camif_subdev_set_fmt,
 };
 
-static struct v4l2_subdev_ops s3c_camif_subdev_ops = {
+static const struct v4l2_subdev_ops s3c_camif_subdev_ops = {
 	.pad = &s3c_camif_subdev_pad_ops,
 };
 

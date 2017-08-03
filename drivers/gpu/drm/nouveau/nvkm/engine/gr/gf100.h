@@ -29,6 +29,7 @@
 #include <core/gpuobj.h>
 #include <subdev/ltc.h>
 #include <subdev/mmu.h>
+#include <engine/falcon.h>
 
 #define GPC_MAX 32
 #define TPC_MAX_PER_GPC 8
@@ -75,6 +76,8 @@ struct gf100_gr {
 	const struct gf100_gr_func *func;
 	struct nvkm_gr base;
 
+	struct nvkm_falcon *fecs;
+	struct nvkm_falcon *gpccs;
 	struct gf100_gr_fuc fuc409c;
 	struct gf100_gr_fuc fuc409d;
 	struct gf100_gr_fuc fuc41ac;
@@ -292,4 +295,6 @@ extern const struct gf100_gr_init gm107_gr_init_l1c_0[];
 extern const struct gf100_gr_init gm107_gr_init_wwdx_0[];
 extern const struct gf100_gr_init gm107_gr_init_cbm_0[];
 void gm107_gr_init_bios(struct gf100_gr *);
+
+void gm200_gr_init_gpc_mmu(struct gf100_gr *);
 #endif

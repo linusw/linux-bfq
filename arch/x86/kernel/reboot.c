@@ -1,6 +1,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
 #include <linux/pm.h>
@@ -221,6 +221,22 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
 			DMI_MATCH(DMI_BOARD_NAME, "P4S800"),
+		},
+	},
+	{	/* Handle problems with rebooting on ASUS EeeBook X205TA */
+		.callback = set_acpi_reboot,
+		.ident = "ASUS EeeBook X205TA",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "X205TA"),
+		},
+	},
+	{	/* Handle problems with rebooting on ASUS EeeBook X205TAW */
+		.callback = set_acpi_reboot,
+		.ident = "ASUS EeeBook X205TAW",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "X205TAW"),
 		},
 	},
 
@@ -705,7 +721,7 @@ static void native_machine_power_off(void)
 	tboot_shutdown(TB_SHUTDOWN_HALT);
 }
 
-struct machine_ops machine_ops = {
+struct machine_ops machine_ops __ro_after_init = {
 	.power_off = native_machine_power_off,
 	.shutdown = native_machine_shutdown,
 	.emergency_restart = native_machine_emergency_restart,

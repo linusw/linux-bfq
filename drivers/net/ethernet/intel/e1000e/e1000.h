@@ -452,6 +452,7 @@ s32 e1000e_get_base_timinca(struct e1000_adapter *adapter, u32 *timinca);
 #define FLAG2_PCIM2PCI_ARBITER_WA         BIT(11)
 #define FLAG2_DFLT_CRC_STRIPPING          BIT(12)
 #define FLAG2_CHECK_RX_HWTSTAMP           BIT(13)
+#define FLAG2_CHECK_SYSTIM_OVERFLOW       BIT(14)
 
 #define E1000_RX_DESC_PS(R, i)	    \
 	(&(((union e1000_rx_desc_packet_split *)((R).desc))[i]))
@@ -492,8 +493,8 @@ int e1000e_setup_rx_resources(struct e1000_ring *ring);
 int e1000e_setup_tx_resources(struct e1000_ring *ring);
 void e1000e_free_rx_resources(struct e1000_ring *ring);
 void e1000e_free_tx_resources(struct e1000_ring *ring);
-struct rtnl_link_stats64 *e1000e_get_stats64(struct net_device *netdev,
-					     struct rtnl_link_stats64 *stats);
+void e1000e_get_stats64(struct net_device *netdev,
+			struct rtnl_link_stats64 *stats);
 void e1000e_set_interrupt_capability(struct e1000_adapter *adapter);
 void e1000e_reset_interrupt_capability(struct e1000_adapter *adapter);
 void e1000e_get_hw_control(struct e1000_adapter *adapter);

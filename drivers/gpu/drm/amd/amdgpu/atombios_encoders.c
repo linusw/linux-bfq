@@ -98,6 +98,7 @@ amdgpu_atombios_encoder_set_backlight_level(struct amdgpu_encoder *amdgpu_encode
 		case ENCODER_OBJECT_ID_INTERNAL_KLDSCP_LVTMA:
 		case ENCODER_OBJECT_ID_INTERNAL_UNIPHY1:
 		case ENCODER_OBJECT_ID_INTERNAL_UNIPHY2:
+		case ENCODER_OBJECT_ID_INTERNAL_UNIPHY3:
 			if (dig->backlight_level == 0)
 				amdgpu_atombios_encoder_setup_dig_transmitter(encoder,
 								       ATOM_TRANSMITTER_ACTION_LCD_BLOFF, 0, 0);
@@ -180,9 +181,6 @@ void amdgpu_atombios_encoder_init_backlight(struct amdgpu_encoder *amdgpu_encode
 	if (!amdgpu_encoder->enc_priv)
 		return;
 
-	if (!adev->is_atom_bios)
-		return;
-
 	if (!(adev->mode_info.firmware_flags & ATOM_BIOS_INFO_BL_CONTROLLED_BY_GPU))
 		return;
 
@@ -233,9 +231,6 @@ amdgpu_atombios_encoder_fini_backlight(struct amdgpu_encoder *amdgpu_encoder)
 	struct amdgpu_encoder_atom_dig *dig;
 
 	if (!amdgpu_encoder->enc_priv)
-		return;
-
-	if (!adev->is_atom_bios)
 		return;
 
 	if (!(adev->mode_info.firmware_flags & ATOM_BIOS_INFO_BL_CONTROLLED_BY_GPU))

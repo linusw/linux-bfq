@@ -2,6 +2,7 @@
  * Functions related to mapping data to requests
  */
 #include <linux/kernel.h>
+#include <linux/sched/task_stack.h>
 #include <linux/module.h>
 #include <linux/bio.h>
 #include <linux/blkdev.h>
@@ -9,21 +10,26 @@
 
 #include "blk.h"
 
-int blk_rq_append_bio(struct request_queue *q, struct request *rq,
-		      struct bio *bio)
+/*
+ * Append a bio to a passthrough request.  Only works can be merged into
+ * the request based on the driver constraints.
+ */
+int blk_rq_append_bio(struct request *rq, struct bio *bio)
 {
-	if (!rq->bio)
-		blk_rq_bio_prep(q, rq, bio);
-	else if (!ll_back_merge_fn(q, rq, bio))
-		return -EINVAL;
-	else {
+	if (!rq->bio) {
+		blk_rq_bio_prep(rq->q, rq, bio);
+	} else {
+		if (!ll_back_merge_fn(rq->q, rq, bio))
+			return -EINVAL;
+
 		rq->biotail->bi_next = bio;
 		rq->biotail = bio;
-
 		rq->__data_len += bio->bi_iter.bi_size;
 	}
+
 	return 0;
 }
+EXPORT_SYMBOL(blk_rq_append_bio);
 
 static int __blk_rq_unmap_user(struct bio *bio)
 {
@@ -55,6 +61,9 @@ static int __blk_rq_map_user_iov(struct request *rq,
 	if (IS_ERR(bio))
 		return PTR_ERR(bio);
 
+	bio->bi_opf &= ~REQ_OP_MASK;
+	bio->bi_opf |= req_op(rq);
+
 	if (map_data && map_data->null_mapped)
 		bio_set_flag(bio, BIO_NULL_MAPPED);
 
@@ -71,7 +80,7 @@ static int __blk_rq_map_user_iov(struct request *rq,
 	 */
 	bio_get(bio);
 
-	ret = blk_rq_append_bio(q, rq, bio);
+	ret = blk_rq_append_bio(rq, bio);
 	if (ret) {
 		bio_endio(bio);
 		__blk_rq_unmap_user(orig_bio);
@@ -83,7 +92,7 @@ static int __blk_rq_map_user_iov(struct request *rq,
 }
 
 /**
- * blk_rq_map_user_iov - map user data to a request, for REQ_TYPE_BLOCK_PC usage
+ * blk_rq_map_user_iov - map user data to a request, for passthrough requests
  * @q:		request queue where request should be inserted
  * @rq:		request to map data to
  * @map_data:   pointer to the rq_map_data holding pages (if necessary)
@@ -113,6 +122,9 @@ int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
 	struct iov_iter i;
 	int ret;
 
+	if (!iter_is_iovec(iter))
+		goto fail;
+
 	if (map_data)
 		copy = true;
 	else if (iov_iter_alignment(iter) & align)
@@ -130,11 +142,12 @@ int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
 	} while (iov_iter_count(&i));
 
 	if (!bio_flagged(bio, BIO_USER_MAPPED))
-		rq->cmd_flags |= REQ_COPY_USER;
+		rq->rq_flags |= RQF_COPY_USER;
 	return 0;
 
 unmap_rq:
 	__blk_rq_unmap_user(bio);
+fail:
 	rq->bio = NULL;
 	return -EINVAL;
 }
@@ -188,7 +201,7 @@ int blk_rq_unmap_user(struct bio *bio)
 EXPORT_SYMBOL(blk_rq_unmap_user);
 
 /**
- * blk_rq_map_kern - map kernel data to a request, for REQ_TYPE_BLOCK_PC usage
+ * blk_rq_map_kern - map kernel data to a request, for passthrough requests
  * @q:		request queue where request should be inserted
  * @rq:		request to fill
  * @kbuf:	the kernel buffer
@@ -223,13 +236,13 @@ int blk_rq_map_kern(struct request_queue *q, struct request *rq, void *kbuf,
 	if (IS_ERR(bio))
 		return PTR_ERR(bio);
 
-	if (!reading)
-		bio->bi_rw |= REQ_WRITE;
+	bio->bi_opf &= ~REQ_OP_MASK;
+	bio->bi_opf |= req_op(rq);
 
 	if (do_copy)
-		rq->cmd_flags |= REQ_COPY_USER;
+		rq->rq_flags |= RQF_COPY_USER;
 
-	ret = blk_rq_append_bio(q, rq, bio);
+	ret = blk_rq_append_bio(rq, bio);
 	if (unlikely(ret)) {
 		/* request is too big */
 		bio_put(bio);

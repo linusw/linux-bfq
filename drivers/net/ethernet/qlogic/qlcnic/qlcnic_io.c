@@ -102,7 +102,6 @@
 #define QLCNIC_RESPONSE_DESC	0x05
 #define QLCNIC_LRO_DESC  	0x12
 
-#define QLCNIC_TX_POLL_BUDGET		128
 #define QLCNIC_TCP_HDR_SIZE		20
 #define QLCNIC_TCP_TS_OPTION_SIZE	12
 #define QLCNIC_FETCH_RING_ID(handle)	((handle) >> 63)
@@ -976,7 +975,7 @@ static int qlcnic_poll(struct napi_struct *napi, int budget)
 		work_done = budget;
 
 	if (work_done < budget) {
-		napi_complete(&sds_ring->napi);
+		napi_complete_done(&sds_ring->napi, work_done);
 		if (test_bit(__QLCNIC_DEV_UP, &adapter->state)) {
 			qlcnic_enable_sds_intr(adapter, sds_ring);
 			qlcnic_enable_tx_intr(adapter, tx_ring);
@@ -1020,7 +1019,7 @@ static int qlcnic_rx_poll(struct napi_struct *napi, int budget)
 	work_done = qlcnic_process_rcv_ring(sds_ring, budget);
 
 	if (work_done < budget) {
-		napi_complete(&sds_ring->napi);
+		napi_complete_done(&sds_ring->napi, work_done);
 		if (test_bit(__QLCNIC_DEV_UP, &adapter->state))
 			qlcnic_enable_sds_intr(adapter, sds_ring);
 	}
@@ -1967,7 +1966,7 @@ static int qlcnic_83xx_msix_sriov_vf_poll(struct napi_struct *napi, int budget)
 		work_done = budget;
 
 	if (work_done < budget) {
-		napi_complete(&sds_ring->napi);
+		napi_complete_done(&sds_ring->napi, work_done);
 		qlcnic_enable_sds_intr(adapter, sds_ring);
 	}
 
@@ -1995,7 +1994,7 @@ static int qlcnic_83xx_poll(struct napi_struct *napi, int budget)
 		work_done = budget;
 
 	if (work_done < budget) {
-		napi_complete(&sds_ring->napi);
+		napi_complete_done(&sds_ring->napi, work_done);
 		qlcnic_enable_sds_intr(adapter, sds_ring);
 	}
 
@@ -2008,7 +2007,6 @@ static int qlcnic_83xx_msix_tx_poll(struct napi_struct *napi, int budget)
 	struct qlcnic_host_tx_ring *tx_ring;
 	struct qlcnic_adapter *adapter;
 
-	budget = QLCNIC_TX_POLL_BUDGET;
 	tx_ring = container_of(napi, struct qlcnic_host_tx_ring, napi);
 	adapter = tx_ring->adapter;
 	work_done = qlcnic_process_cmd_ring(adapter, tx_ring, budget);
@@ -2034,7 +2032,7 @@ static int qlcnic_83xx_rx_poll(struct napi_struct *napi, int budget)
 	adapter = sds_ring->adapter;
 	work_done = qlcnic_83xx_process_rcv_ring(sds_ring, budget);
 	if (work_done < budget) {
-		napi_complete(&sds_ring->napi);
+		napi_complete_done(&sds_ring->napi, work_done);
 		if (test_bit(__QLCNIC_DEV_UP, &adapter->state))
 			qlcnic_enable_sds_intr(adapter, sds_ring);
 	}

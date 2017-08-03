@@ -22,6 +22,7 @@
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/atmel.h>
 #include <linux/io.h>
 #include <linux/clk/at91_pmc.h>
 
@@ -54,7 +55,7 @@ static struct {
 	int memctrl;
 } at91_pm_data;
 
-void __iomem *at91_ramc_base[2];
+static void __iomem *at91_ramc_base[2];
 
 static int at91_pm_valid_state(suspend_state_t state)
 {
@@ -288,6 +289,22 @@ static void at91_ddr_standby(void)
 		at91_ramc_write(1, AT91_DDRSDRC_LPR, saved_lpr1);
 }
 
+static void sama5d3_ddr_standby(void)
+{
+	u32 lpr0;
+	u32 saved_lpr0;
+
+	saved_lpr0 = at91_ramc_read(0, AT91_DDRSDRC_LPR);
+	lpr0 = saved_lpr0 & ~AT91_DDRSDRC_LPCB;
+	lpr0 |= AT91_DDRSDRC_LPCB_POWER_DOWN;
+
+	at91_ramc_write(0, AT91_DDRSDRC_LPR, lpr0);
+
+	cpu_do_idle();
+
+	at91_ramc_write(0, AT91_DDRSDRC_LPR, saved_lpr0);
+}
+
 /* We manage both DDRAM/SDRAM controllers, we need more than one value to
  * remember.
  */
@@ -322,7 +339,7 @@ static const struct of_device_id const ramc_ids[] __initconst = {
 	{ .compatible = "atmel,at91rm9200-sdramc", .data = at91rm9200_standby },
 	{ .compatible = "atmel,at91sam9260-sdramc", .data = at91sam9_sdram_standby },
 	{ .compatible = "atmel,at91sam9g45-ddramc", .data = at91_ddr_standby },
-	{ .compatible = "atmel,sama5d3-ddramc", .data = at91_ddr_standby },
+	{ .compatible = "atmel,sama5d3-ddramc", .data = sama5d3_ddr_standby },
 	{ /*sentinel*/ }
 };
 
@@ -355,7 +372,7 @@ static __init void at91_dt_ramc(void)
 	at91_pm_set_standby(standby);
 }
 
-void at91rm9200_idle(void)
+static void at91rm9200_idle(void)
 {
 	/*
 	 * Disable the processor clock.  The processor will be automatically
@@ -364,7 +381,7 @@ void at91rm9200_idle(void)
 	writel(AT91_PMC_PCK, pmc + AT91_PMC_SCDR);
 }
 
-void at91sam9_idle(void)
+static void at91sam9_idle(void)
 {
 	writel(AT91_PMC_PCK, pmc + AT91_PMC_SCDR);
 	cpu_do_idle();

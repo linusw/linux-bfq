@@ -431,15 +431,8 @@ static void atmel_hlcdc_fb_output_poll_changed(struct drm_device *dev)
 {
 	struct atmel_hlcdc_dc *dc = dev->dev_private;
 
-	if (dc->fbdev) {
+	if (dc->fbdev)
 		drm_fbdev_cma_hotplug_event(dc->fbdev);
-	} else {
-		dc->fbdev = drm_fbdev_cma_init(dev, 24,
-				dev->mode_config.num_crtc,
-				dev->mode_config.num_connector);
-		if (IS_ERR(dc->fbdev))
-			dc->fbdev = NULL;
-	}
 }
 
 struct atmel_hlcdc_dc_commit {
@@ -457,14 +450,14 @@ atmel_hlcdc_dc_atomic_complete(struct atmel_hlcdc_dc_commit *commit)
 
 	/* Apply the atomic update. */
 	drm_atomic_helper_commit_modeset_disables(dev, old_state);
-	drm_atomic_helper_commit_planes(dev, old_state, false);
+	drm_atomic_helper_commit_planes(dev, old_state, 0);
 	drm_atomic_helper_commit_modeset_enables(dev, old_state);
 
 	drm_atomic_helper_wait_for_vblanks(dev, old_state);
 
 	drm_atomic_helper_cleanup_planes(dev, old_state);
 
-	drm_atomic_state_free(old_state);
+	drm_atomic_state_put(old_state);
 
 	/* Complete the commit, wake up any waiter. */
 	spin_lock(&dc->commit.wait.lock);
@@ -519,8 +512,9 @@ static int atmel_hlcdc_dc_atomic_commit(struct drm_device *dev,
 	}
 
 	/* Swap the state, this is the point of no return. */
-	drm_atomic_helper_swap_state(dev, state);
+	drm_atomic_helper_swap_state(state, true);
 
+	drm_atomic_state_get(state);
 	if (async)
 		queue_work(dc->wq, &commit->work);
 	else
@@ -652,10 +646,12 @@ static int atmel_hlcdc_dc_load(struct drm_device *dev)
 
 	platform_set_drvdata(pdev, dev);
 
-	drm_kms_helper_poll_init(dev);
+	dc->fbdev = drm_fbdev_cma_init(dev, 24,
+			dev->mode_config.num_connector);
+	if (IS_ERR(dc->fbdev))
+		dc->fbdev = NULL;
 
-	/* force connectors detection */
-	drm_helper_hpd_irq_event(dev);
+	drm_kms_helper_poll_init(dev);
 
 	return 0;
 
@@ -689,13 +685,6 @@ static void atmel_hlcdc_dc_unload(struct drm_device *dev)
 	pm_runtime_disable(dev->dev);
 	clk_disable_unprepare(dc->hlcdc->periph_clk);
 	destroy_workqueue(dc->wq);
-}
-
-static void atmel_hlcdc_dc_connector_unplug_all(struct drm_device *dev)
-{
-	mutex_lock(&dev->mode_config.mutex);
-	drm_connector_unregister_all(dev);
-	mutex_unlock(&dev->mode_config.mutex);
 }
 
 static void atmel_hlcdc_dc_lastclose(struct drm_device *dev)
@@ -755,9 +744,7 @@ static const struct file_operations fops = {
 	.open               = drm_open,
 	.release            = drm_release,
 	.unlocked_ioctl     = drm_ioctl,
-#ifdef CONFIG_COMPAT
 	.compat_ioctl       = drm_compat_ioctl,
-#endif
 	.poll               = drm_poll,
 	.read               = drm_read,
 	.llseek             = no_llseek,
@@ -776,7 +763,7 @@ static struct drm_driver atmel_hlcdc_dc_driver = {
 	.get_vblank_counter = drm_vblank_no_hw_counter,
 	.enable_vblank = atmel_hlcdc_dc_enable_vblank,
 	.disable_vblank = atmel_hlcdc_dc_disable_vblank,
-	.gem_free_object = drm_gem_cma_free_object,
+	.gem_free_object_unlocked = drm_gem_cma_free_object,
 	.gem_vm_ops = &drm_gem_cma_vm_ops,
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
@@ -804,8 +791,8 @@ static int atmel_hlcdc_dc_drm_probe(struct platform_device *pdev)
 	int ret;
 
 	ddev = drm_dev_alloc(&atmel_hlcdc_dc_driver, &pdev->dev);
-	if (!ddev)
-		return -ENOMEM;
+	if (IS_ERR(ddev))
+		return PTR_ERR(ddev);
 
 	ret = atmel_hlcdc_dc_load(ddev);
 	if (ret)
@@ -815,14 +802,7 @@ static int atmel_hlcdc_dc_drm_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unload;
 
-	ret = drm_connector_register_all(ddev);
-	if (ret)
-		goto err_unregister;
-
 	return 0;
-
-err_unregister:
-	drm_dev_unregister(ddev);
 
 err_unload:
 	atmel_hlcdc_dc_unload(ddev);
@@ -837,7 +817,6 @@ static int atmel_hlcdc_dc_drm_remove(struct platform_device *pdev)
 {
 	struct drm_device *ddev = platform_get_drvdata(pdev);
 
-	atmel_hlcdc_dc_connector_unplug_all(ddev);
 	drm_dev_unregister(ddev);
 	atmel_hlcdc_dc_unload(ddev);
 	drm_dev_unref(ddev);

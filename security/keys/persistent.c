@@ -10,6 +10,8 @@
  */
 
 #include <linux/user_namespace.h>
+#include <linux/cred.h>
+
 #include "internal.h"
 
 unsigned persistent_keyring_expiry = 3 * 24 * 3600; /* Expire after 3 days of non-use */
@@ -114,7 +116,7 @@ found:
 		ret = key_link(key_ref_to_ptr(dest_ref), persistent);
 		if (ret == 0) {
 			key_set_timeout(persistent, persistent_keyring_expiry);
-			ret = persistent->serial;		
+			ret = persistent->serial;
 		}
 	}
 

@@ -18,6 +18,9 @@
 #include <linux/module.h>
 #include <linux/firmware.h>
 #include <linux/of.h>
+#include <linux/dmi.h>
+#include <linux/ctype.h>
+#include <asm/byteorder.h>
 
 #include "core.h"
 #include "mac.h"
@@ -55,11 +58,10 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.name = "qca988x hw2.0",
 		.patch_load_addr = QCA988X_HW_2_0_PATCH_LOAD_ADDR,
 		.uart_pin = 7,
-		.has_shifted_cc_wraparound = true,
+		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_ALL,
 		.otp_exe_param = 0,
 		.channel_counters_freq_hz = 88000,
 		.max_probe_resp_desc_thres = 0,
-		.hw_4addr_pad = ATH10K_HW_4ADDR_PAD_AFTER,
 		.cal_data_len = 2116,
 		.fw = {
 			.dir = QCA988X_HW_2_0_FW_DIR,
@@ -67,6 +69,28 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA988X_BOARD_DATA_SZ,
 			.board_ext_size = QCA988X_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
+	},
+	{
+		.id = QCA9887_HW_1_0_VERSION,
+		.dev_id = QCA9887_1_0_DEVICE_ID,
+		.name = "qca9887 hw1.0",
+		.patch_load_addr = QCA9887_HW_1_0_PATCH_LOAD_ADDR,
+		.uart_pin = 7,
+		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_ALL,
+		.otp_exe_param = 0,
+		.channel_counters_freq_hz = 88000,
+		.max_probe_resp_desc_thres = 0,
+		.cal_data_len = 2116,
+		.fw = {
+			.dir = QCA9887_HW_1_0_FW_DIR,
+			.board = QCA9887_HW_1_0_BOARD_DATA_FILE,
+			.board_size = QCA9887_BOARD_DATA_SZ,
+			.board_ext_size = QCA9887_BOARD_EXT_DATA_SZ,
+		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA6174_HW_2_1_VERSION,
@@ -84,6 +108,8 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA6174_BOARD_DATA_SZ,
 			.board_ext_size = QCA6174_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA6174_HW_2_1_VERSION,
@@ -94,7 +120,6 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.otp_exe_param = 0,
 		.channel_counters_freq_hz = 88000,
 		.max_probe_resp_desc_thres = 0,
-		.hw_4addr_pad = ATH10K_HW_4ADDR_PAD_AFTER,
 		.cal_data_len = 8124,
 		.fw = {
 			.dir = QCA6174_HW_2_1_FW_DIR,
@@ -102,6 +127,8 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA6174_BOARD_DATA_SZ,
 			.board_ext_size = QCA6174_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA6174_HW_3_0_VERSION,
@@ -112,7 +139,6 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.otp_exe_param = 0,
 		.channel_counters_freq_hz = 88000,
 		.max_probe_resp_desc_thres = 0,
-		.hw_4addr_pad = ATH10K_HW_4ADDR_PAD_AFTER,
 		.cal_data_len = 8124,
 		.fw = {
 			.dir = QCA6174_HW_3_0_FW_DIR,
@@ -120,6 +146,8 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA6174_BOARD_DATA_SZ,
 			.board_ext_size = QCA6174_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA6174_HW_3_2_VERSION,
@@ -130,7 +158,6 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.otp_exe_param = 0,
 		.channel_counters_freq_hz = 88000,
 		.max_probe_resp_desc_thres = 0,
-		.hw_4addr_pad = ATH10K_HW_4ADDR_PAD_AFTER,
 		.cal_data_len = 8124,
 		.fw = {
 			/* uses same binaries as hw3.0 */
@@ -139,6 +166,8 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA6174_BOARD_DATA_SZ,
 			.board_ext_size = QCA6174_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA99X0_HW_2_0_DEV_VERSION,
@@ -148,9 +177,9 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.uart_pin = 7,
 		.otp_exe_param = 0x00000700,
 		.continuous_frag_desc = true,
+		.cck_rate_map_rev2 = true,
 		.channel_counters_freq_hz = 150000,
 		.max_probe_resp_desc_thres = 24,
-		.hw_4addr_pad = ATH10K_HW_4ADDR_PAD_BEFORE,
 		.tx_chain_mask = 0xf,
 		.rx_chain_mask = 0xf,
 		.max_spatial_stream = 4,
@@ -161,6 +190,60 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA99X0_BOARD_DATA_SZ,
 			.board_ext_size = QCA99X0_BOARD_EXT_DATA_SZ,
 		},
+		.sw_decrypt_mcast_mgmt = true,
+		.hw_ops = &qca99x0_ops,
+		.decap_align_bytes = 1,
+	},
+	{
+		.id = QCA9984_HW_1_0_DEV_VERSION,
+		.dev_id = QCA9984_1_0_DEVICE_ID,
+		.name = "qca9984/qca9994 hw1.0",
+		.patch_load_addr = QCA9984_HW_1_0_PATCH_LOAD_ADDR,
+		.uart_pin = 7,
+		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_EACH,
+		.otp_exe_param = 0x00000700,
+		.continuous_frag_desc = true,
+		.cck_rate_map_rev2 = true,
+		.channel_counters_freq_hz = 150000,
+		.max_probe_resp_desc_thres = 24,
+		.tx_chain_mask = 0xf,
+		.rx_chain_mask = 0xf,
+		.max_spatial_stream = 4,
+		.cal_data_len = 12064,
+		.fw = {
+			.dir = QCA9984_HW_1_0_FW_DIR,
+			.board = QCA9984_HW_1_0_BOARD_DATA_FILE,
+			.board_size = QCA99X0_BOARD_DATA_SZ,
+			.board_ext_size = QCA99X0_BOARD_EXT_DATA_SZ,
+		},
+		.sw_decrypt_mcast_mgmt = true,
+		.hw_ops = &qca99x0_ops,
+		.decap_align_bytes = 1,
+	},
+	{
+		.id = QCA9888_HW_2_0_DEV_VERSION,
+		.dev_id = QCA9888_2_0_DEVICE_ID,
+		.name = "qca9888 hw2.0",
+		.patch_load_addr = QCA9888_HW_2_0_PATCH_LOAD_ADDR,
+		.uart_pin = 7,
+		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_EACH,
+		.otp_exe_param = 0x00000700,
+		.continuous_frag_desc = true,
+		.channel_counters_freq_hz = 150000,
+		.max_probe_resp_desc_thres = 24,
+		.tx_chain_mask = 3,
+		.rx_chain_mask = 3,
+		.max_spatial_stream = 2,
+		.cal_data_len = 12064,
+		.fw = {
+			.dir = QCA9888_HW_2_0_FW_DIR,
+			.board = QCA9888_HW_2_0_BOARD_DATA_FILE,
+			.board_size = QCA99X0_BOARD_DATA_SZ,
+			.board_ext_size = QCA99X0_BOARD_EXT_DATA_SZ,
+		},
+		.sw_decrypt_mcast_mgmt = true,
+		.hw_ops = &qca99x0_ops,
+		.decap_align_bytes = 1,
 	},
 	{
 		.id = QCA9377_HW_1_0_DEV_VERSION,
@@ -178,6 +261,8 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA9377_BOARD_DATA_SZ,
 			.board_ext_size = QCA9377_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA9377_HW_1_1_DEV_VERSION,
@@ -195,6 +280,8 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA9377_BOARD_DATA_SZ,
 			.board_ext_size = QCA9377_BOARD_EXT_DATA_SZ,
 		},
+		.hw_ops = &qca988x_ops,
+		.decap_align_bytes = 4,
 	},
 	{
 		.id = QCA4019_HW_1_0_DEV_VERSION,
@@ -202,12 +289,12 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.name = "qca4019 hw1.0",
 		.patch_load_addr = QCA4019_HW_1_0_PATCH_LOAD_ADDR,
 		.uart_pin = 7,
-		.has_shifted_cc_wraparound = true,
+		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_EACH,
 		.otp_exe_param = 0x0010000,
 		.continuous_frag_desc = true,
+		.cck_rate_map_rev2 = true,
 		.channel_counters_freq_hz = 125000,
 		.max_probe_resp_desc_thres = 24,
-		.hw_4addr_pad = ATH10K_HW_4ADDR_PAD_BEFORE,
 		.tx_chain_mask = 0x3,
 		.rx_chain_mask = 0x3,
 		.max_spatial_stream = 2,
@@ -218,6 +305,9 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 			.board_size = QCA4019_BOARD_DATA_SZ,
 			.board_ext_size = QCA4019_BOARD_EXT_DATA_SZ,
 		},
+		.sw_decrypt_mcast_mgmt = true,
+		.hw_ops = &qca99x0_ops,
+		.decap_align_bytes = 1,
 	},
 };
 
@@ -236,6 +326,9 @@ static const char *const ath10k_core_fw_feature_str[] = {
 	[ATH10K_FW_FEATURE_SUPPORTS_ADAPTIVE_CCA] = "adaptive-cca",
 	[ATH10K_FW_FEATURE_MFP_SUPPORT] = "mfp",
 	[ATH10K_FW_FEATURE_PEER_FLOW_CONTROL] = "peer-flow-ctrl",
+	[ATH10K_FW_FEATURE_BTCOEX_PARAM] = "btcoex-param",
+	[ATH10K_FW_FEATURE_SKIP_NULL_FUNC_WAR] = "skip-null-func-war",
+	[ATH10K_FW_FEATURE_ALLOWS_MESH_BCAST] = "allows-mesh-bcast",
 };
 
 static unsigned int ath10k_core_get_fw_feature_str(char *buf,
@@ -258,7 +351,7 @@ void ath10k_core_get_fw_features_str(struct ath10k *ar,
 				     char *buf,
 				     size_t buf_len)
 {
-	unsigned int len = 0;
+	size_t len = 0;
 	int i;
 
 	for (i = 0; i < ATH10K_FW_FEATURE_COUNT; i++) {
@@ -363,7 +456,10 @@ static const struct firmware *ath10k_fetch_fw_file(struct ath10k *ar,
 		dir = ".";
 
 	snprintf(filename, sizeof(filename), "%s/%s", dir, file);
-	ret = request_firmware(&fw, filename, ar->dev);
+	ret = request_firmware_direct(&fw, filename, ar->dev);
+	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot fw request '%s': %d\n",
+		   filename, ret);
+
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -531,6 +627,35 @@ out:
 	return ret;
 }
 
+static int ath10k_download_cal_eeprom(struct ath10k *ar)
+{
+	size_t data_len;
+	void *data = NULL;
+	int ret;
+
+	ret = ath10k_hif_fetch_cal_eeprom(ar, &data, &data_len);
+	if (ret) {
+		if (ret != -EOPNOTSUPP)
+			ath10k_warn(ar, "failed to read calibration data from EEPROM: %d\n",
+				    ret);
+		goto out_free;
+	}
+
+	ret = ath10k_download_board_data(ar, data, data_len);
+	if (ret) {
+		ath10k_warn(ar, "failed to download calibration data from EEPROM: %d\n",
+			    ret);
+		goto out_free;
+	}
+
+	ret = 0;
+
+out_free:
+	kfree(data);
+
+	return ret;
+}
+
 static int ath10k_core_get_board_id_from_otp(struct ath10k *ar)
 {
 	u32 result, address;
@@ -574,12 +699,82 @@ static int ath10k_core_get_board_id_from_otp(struct ath10k *ar)
 		   "boot get otp board id result 0x%08x board_id %d chip_id %d\n",
 		   result, board_id, chip_id);
 
-	if ((result & ATH10K_BMI_BOARD_ID_STATUS_MASK) != 0)
+	if ((result & ATH10K_BMI_BOARD_ID_STATUS_MASK) != 0 ||
+	    (board_id == 0)) {
+		ath10k_dbg(ar, ATH10K_DBG_BOOT,
+			   "board id does not exist in otp, ignore it\n");
 		return -EOPNOTSUPP;
+	}
 
 	ar->id.bmi_ids_valid = true;
 	ar->id.bmi_board_id = board_id;
 	ar->id.bmi_chip_id = chip_id;
+
+	return 0;
+}
+
+static void ath10k_core_check_bdfext(const struct dmi_header *hdr, void *data)
+{
+	struct ath10k *ar = data;
+	const char *bdf_ext;
+	const char *magic = ATH10K_SMBIOS_BDF_EXT_MAGIC;
+	u8 bdf_enabled;
+	int i;
+
+	if (hdr->type != ATH10K_SMBIOS_BDF_EXT_TYPE)
+		return;
+
+	if (hdr->length != ATH10K_SMBIOS_BDF_EXT_LENGTH) {
+		ath10k_dbg(ar, ATH10K_DBG_BOOT,
+			   "wrong smbios bdf ext type length (%d).\n",
+			   hdr->length);
+		return;
+	}
+
+	bdf_enabled = *((u8 *)hdr + ATH10K_SMBIOS_BDF_EXT_OFFSET);
+	if (!bdf_enabled) {
+		ath10k_dbg(ar, ATH10K_DBG_BOOT, "bdf variant name not found.\n");
+		return;
+	}
+
+	/* Only one string exists (per spec) */
+	bdf_ext = (char *)hdr + hdr->length;
+
+	if (memcmp(bdf_ext, magic, strlen(magic)) != 0) {
+		ath10k_dbg(ar, ATH10K_DBG_BOOT,
+			   "bdf variant magic does not match.\n");
+		return;
+	}
+
+	for (i = 0; i < strlen(bdf_ext); i++) {
+		if (!isascii(bdf_ext[i]) || !isprint(bdf_ext[i])) {
+			ath10k_dbg(ar, ATH10K_DBG_BOOT,
+				   "bdf variant name contains non ascii chars.\n");
+			return;
+		}
+	}
+
+	/* Copy extension name without magic suffix */
+	if (strscpy(ar->id.bdf_ext, bdf_ext + strlen(magic),
+		    sizeof(ar->id.bdf_ext)) < 0) {
+		ath10k_dbg(ar, ATH10K_DBG_BOOT,
+			   "bdf variant string is longer than the buffer can accommodate (variant: %s)\n",
+			    bdf_ext);
+		return;
+	}
+
+	ath10k_dbg(ar, ATH10K_DBG_BOOT,
+		   "found and validated bdf variant smbios_type 0x%x bdf %s\n",
+		   ATH10K_SMBIOS_BDF_EXT_TYPE, bdf_ext);
+}
+
+static int ath10k_core_check_smbios(struct ath10k *ar)
+{
+	ar->id.bdf_ext[0] = '\0';
+	dmi_walk(ath10k_core_check_bdfext, ar);
+
+	if (ar->id.bdf_ext[0] == '\0')
+		return -ENODATA;
 
 	return 0;
 }
@@ -602,7 +797,7 @@ static int ath10k_download_and_run_otp(struct ath10k *ar)
 
 	if (!ar->running_fw->fw_file.otp_data ||
 	    !ar->running_fw->fw_file.otp_len) {
-		ath10k_warn(ar, "Not running otp, calibration will be incorrect (otp-data %p otp_len %zd)!\n",
+		ath10k_warn(ar, "Not running otp, calibration will be incorrect (otp-data %pK otp_len %zd)!\n",
 			    ar->running_fw->fw_file.otp_data,
 			    ar->running_fw->fw_file.otp_len);
 		return 0;
@@ -648,7 +843,7 @@ static int ath10k_download_fw(struct ath10k *ar)
 	data = ar->running_fw->fw_file.firmware_data;
 	data_len = ar->running_fw->fw_file.firmware_len;
 
-	ret = ath10k_swap_code_seg_configure(ar);
+	ret = ath10k_swap_code_seg_configure(ar, &ar->running_fw->fw_file);
 	if (ret) {
 		ath10k_err(ar, "failed to configure fw code swap: %d\n",
 			   ret);
@@ -656,7 +851,7 @@ static int ath10k_download_fw(struct ath10k *ar)
 	}
 
 	ath10k_dbg(ar, ATH10K_DBG_BOOT,
-		   "boot uploading firmware image %p len %d\n",
+		   "boot uploading firmware image %pK len %d\n",
 		   data, data_len);
 
 	ret = ath10k_bmi_fast_download(ar, address, data, data_len);
@@ -690,7 +885,7 @@ static void ath10k_core_free_firmware_files(struct ath10k *ar)
 	if (!IS_ERR(ar->pre_cal_file))
 		release_firmware(ar->pre_cal_file);
 
-	ath10k_swap_code_seg_release(ar);
+	ath10k_swap_code_seg_release(ar, &ar->normal_mode_fw.fw_file);
 
 	ar->normal_mode_fw.fw_file.otp_data = NULL;
 	ar->normal_mode_fw.fw_file.otp_len = 0;
@@ -893,6 +1088,23 @@ static int ath10k_core_fetch_board_data_api_n(struct ath10k *ar,
 		case ATH10K_BD_IE_BOARD:
 			ret = ath10k_core_parse_bd_ie_board(ar, data, ie_len,
 							    boardname);
+			if (ret == -ENOENT && ar->id.bdf_ext[0] != '\0') {
+				/* try default bdf if variant was not found */
+				char *s, *v = ",variant=";
+				char boardname2[100];
+
+				strlcpy(boardname2, boardname,
+					sizeof(boardname2));
+
+				s = strstr(boardname2, v);
+				if (s)
+					*s = '\0';  /* strip ",variant=%s" */
+
+				ret = ath10k_core_parse_bd_ie_board(ar, data,
+								    ie_len,
+								    boardname2);
+			}
+
 			if (ret == -ENOENT)
 				/* no match found, continue */
 				break;
@@ -930,6 +1142,9 @@ err:
 static int ath10k_core_create_board_name(struct ath10k *ar, char *name,
 					 size_t name_len)
 {
+	/* strlen(',variant=') + strlen(ar->id.bdf_ext) */
+	char variant[9 + ATH10K_SMBIOS_BDF_EXT_STR_LENGTH] = { 0 };
+
 	if (ar->id.bmi_ids_valid) {
 		scnprintf(name, name_len,
 			  "bus=%s,bmi-chip-id=%d,bmi-board-id=%d",
@@ -939,12 +1154,15 @@ static int ath10k_core_create_board_name(struct ath10k *ar, char *name,
 		goto out;
 	}
 
+	if (ar->id.bdf_ext[0] != '\0')
+		scnprintf(variant, sizeof(variant), ",variant=%s",
+			  ar->id.bdf_ext);
+
 	scnprintf(name, name_len,
-		  "bus=%s,vendor=%04x,device=%04x,subsystem-vendor=%04x,subsystem-device=%04x",
+		  "bus=%s,vendor=%04x,device=%04x,subsystem-vendor=%04x,subsystem-device=%04x%s",
 		  ath10k_bus_str(ar->hif.bus),
 		  ar->id.vendor, ar->id.device,
-		  ar->id.subsystem_vendor, ar->id.subsystem_device);
-
+		  ar->id.subsystem_vendor, ar->id.subsystem_device, variant);
 out:
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot using board name '%s'\n", name);
 
@@ -971,7 +1189,8 @@ static int ath10k_core_fetch_board_file(struct ath10k *ar)
 	ar->bd_api = 1;
 	ret = ath10k_core_fetch_board_data_api_1(ar);
 	if (ret) {
-		ath10k_err(ar, "failed to fetch board data\n");
+		ath10k_err(ar, "failed to fetch board-2.bin or board.bin from %s\n",
+			   ar->hw_params.fw.dir);
 		return ret;
 	}
 
@@ -992,12 +1211,8 @@ int ath10k_core_fetch_firmware_api_n(struct ath10k *ar, const char *name,
 	/* first fetch the firmware file (firmware-*.bin) */
 	fw_file->firmware = ath10k_fetch_fw_file(ar, ar->hw_params.fw.dir,
 						 name);
-	if (IS_ERR(fw_file->firmware)) {
-		ath10k_err(ar, "could not fetch firmware file '%s/%s': %ld\n",
-			   ar->hw_params.fw.dir, name,
-			   PTR_ERR(fw_file->firmware));
+	if (IS_ERR(fw_file->firmware))
 		return PTR_ERR(fw_file->firmware);
-	}
 
 	data = fw_file->firmware->data;
 	len = fw_file->firmware->size;
@@ -1161,44 +1376,39 @@ err:
 	return ret;
 }
 
+static void ath10k_core_get_fw_name(struct ath10k *ar, char *fw_name,
+				    size_t fw_name_len, int fw_api)
+{
+	scnprintf(fw_name, fw_name_len, "%s-%d.bin", ATH10K_FW_FILE_BASE, fw_api);
+}
+
 static int ath10k_core_fetch_firmware_files(struct ath10k *ar)
 {
-	int ret;
+	int ret, i;
+	char fw_name[100];
 
 	/* calibration file is optional, don't check for any errors */
 	ath10k_fetch_cal_file(ar);
 
-	ar->fw_api = 5;
-	ath10k_dbg(ar, ATH10K_DBG_BOOT, "trying fw api %d\n", ar->fw_api);
+	for (i = ATH10K_FW_API_MAX; i >= ATH10K_FW_API_MIN; i--) {
+		ar->fw_api = i;
+		ath10k_dbg(ar, ATH10K_DBG_BOOT, "trying fw api %d\n",
+			   ar->fw_api);
 
-	ret = ath10k_core_fetch_firmware_api_n(ar, ATH10K_FW_API5_FILE,
-					       &ar->normal_mode_fw.fw_file);
-	if (ret == 0)
-		goto success;
+		ath10k_core_get_fw_name(ar, fw_name, sizeof(fw_name), ar->fw_api);
+		ret = ath10k_core_fetch_firmware_api_n(ar, fw_name,
+						       &ar->normal_mode_fw.fw_file);
+		if (!ret)
+			goto success;
+	}
 
-	ar->fw_api = 4;
-	ath10k_dbg(ar, ATH10K_DBG_BOOT, "trying fw api %d\n", ar->fw_api);
+	/* we end up here if we couldn't fetch any firmware */
 
-	ret = ath10k_core_fetch_firmware_api_n(ar, ATH10K_FW_API4_FILE,
-					       &ar->normal_mode_fw.fw_file);
-	if (ret == 0)
-		goto success;
+	ath10k_err(ar, "Failed to find firmware-N.bin (N between %d and %d) from %s: %d",
+		   ATH10K_FW_API_MIN, ATH10K_FW_API_MAX, ar->hw_params.fw.dir,
+		   ret);
 
-	ar->fw_api = 3;
-	ath10k_dbg(ar, ATH10K_DBG_BOOT, "trying fw api %d\n", ar->fw_api);
-
-	ret = ath10k_core_fetch_firmware_api_n(ar, ATH10K_FW_API3_FILE,
-					       &ar->normal_mode_fw.fw_file);
-	if (ret == 0)
-		goto success;
-
-	ar->fw_api = 2;
-	ath10k_dbg(ar, ATH10K_DBG_BOOT, "trying fw api %d\n", ar->fw_api);
-
-	ret = ath10k_core_fetch_firmware_api_n(ar, ATH10K_FW_API2_FILE,
-					       &ar->normal_mode_fw.fw_file);
-	if (ret)
-		return ret;
+	return ret;
 
 success:
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "using fw api %d\n", ar->fw_api);
@@ -1293,7 +1503,17 @@ static int ath10k_download_cal_data(struct ath10k *ar)
 	}
 
 	ath10k_dbg(ar, ATH10K_DBG_BOOT,
-		   "boot did not find DT entry, try OTP next: %d\n",
+		   "boot did not find DT entry, try target EEPROM next: %d\n",
+		   ret);
+
+	ret = ath10k_download_cal_eeprom(ar);
+	if (ret == 0) {
+		ar->cal_mode = ATH10K_CAL_MODE_EEPROM;
+		goto done;
+	}
+
+	ath10k_dbg(ar, ATH10K_DBG_BOOT,
+		   "boot did not find target EEPROM entry, try OTP next: %d\n",
 		   ret);
 
 	ret = ath10k_download_and_run_otp(ar);
@@ -1380,6 +1600,7 @@ static int ath10k_init_hw_params(struct ath10k *ar)
 static void ath10k_core_restart(struct work_struct *work)
 {
 	struct ath10k *ar = container_of(work, struct ath10k, restart_work);
+	int ret;
 
 	set_bit(ATH10K_FLAG_CRASH_FLUSH, &ar->dev_flags);
 
@@ -1390,14 +1611,14 @@ static void ath10k_core_restart(struct work_struct *work)
 
 	ieee80211_stop_queues(ar->hw);
 	ath10k_drain_tx(ar);
-	complete_all(&ar->scan.started);
-	complete_all(&ar->scan.completed);
-	complete_all(&ar->scan.on_channel);
-	complete_all(&ar->offchan_tx_completed);
-	complete_all(&ar->install_key_done);
-	complete_all(&ar->vdev_setup_done);
-	complete_all(&ar->thermal.wmi_sync);
-	complete_all(&ar->bss_survey_done);
+	complete(&ar->scan.started);
+	complete(&ar->scan.completed);
+	complete(&ar->scan.on_channel);
+	complete(&ar->offchan_tx_completed);
+	complete(&ar->install_key_done);
+	complete(&ar->vdev_setup_done);
+	complete(&ar->thermal.wmi_sync);
+	complete(&ar->bss_survey_done);
 	wake_up(&ar->htt.empty_tx_wq);
 	wake_up(&ar->wmi.tx_credits_wq);
 	wake_up(&ar->peer_mapping_wq);
@@ -1407,7 +1628,7 @@ static void ath10k_core_restart(struct work_struct *work)
 	switch (ar->state) {
 	case ATH10K_STATE_ON:
 		ar->state = ATH10K_STATE_RESTARTING;
-		ath10k_hif_stop(ar);
+		ath10k_halt(ar);
 		ath10k_scan_finish(ar);
 		ieee80211_restart_hw(ar->hw);
 		break;
@@ -1431,6 +1652,20 @@ static void ath10k_core_restart(struct work_struct *work)
 	}
 
 	mutex_unlock(&ar->conf_mutex);
+
+	ret = ath10k_debug_fw_devcoredump(ar);
+	if (ret)
+		ath10k_warn(ar, "failed to send firmware crash dump via devcoredump: %d",
+			    ret);
+}
+
+static void ath10k_core_set_coverage_class_work(struct work_struct *work)
+{
+	struct ath10k *ar = container_of(work, struct ath10k,
+					 set_coverage_class_work);
+
+	if (ar->hw_params.hw_ops->set_coverage_class)
+		ar->hw_params.hw_ops->set_coverage_class(ar, -1);
 }
 
 static int ath10k_core_init_firmware_features(struct ath10k *ar)
@@ -1590,9 +1825,58 @@ static int ath10k_core_init_firmware_features(struct ath10k *ar)
 		case ATH10K_FW_WMI_OP_VERSION_10_4:
 		case ATH10K_FW_WMI_OP_VERSION_UNSET:
 		case ATH10K_FW_WMI_OP_VERSION_MAX:
-			WARN_ON(1);
+			ath10k_err(ar, "htt op version not found from fw meta data");
 			return -EINVAL;
 		}
+	}
+
+	return 0;
+}
+
+static int ath10k_core_reset_rx_filter(struct ath10k *ar)
+{
+	int ret;
+	int vdev_id;
+	int vdev_type;
+	int vdev_subtype;
+	const u8 *vdev_addr;
+
+	vdev_id = 0;
+	vdev_type = WMI_VDEV_TYPE_STA;
+	vdev_subtype = ath10k_wmi_get_vdev_subtype(ar, WMI_VDEV_SUBTYPE_NONE);
+	vdev_addr = ar->mac_addr;
+
+	ret = ath10k_wmi_vdev_create(ar, vdev_id, vdev_type, vdev_subtype,
+				     vdev_addr);
+	if (ret) {
+		ath10k_err(ar, "failed to create dummy vdev: %d\n", ret);
+		return ret;
+	}
+
+	ret = ath10k_wmi_vdev_delete(ar, vdev_id);
+	if (ret) {
+		ath10k_err(ar, "failed to delete dummy vdev: %d\n", ret);
+		return ret;
+	}
+
+	/* WMI and HTT may use separate HIF pipes and are not guaranteed to be
+	 * serialized properly implicitly.
+	 *
+	 * Moreover (most) WMI commands have no explicit acknowledges. It is
+	 * possible to infer it implicitly by poking firmware with echo
+	 * command - getting a reply means all preceding comments have been
+	 * (mostly) processed.
+	 *
+	 * In case of vdev create/delete this is sufficient.
+	 *
+	 * Without this it's possible to end up with a race when HTT Rx ring is
+	 * started before vdev create/delete hack is complete allowing a short
+	 * window of opportunity to receive (and Tx ACK) a bunch of frames.
+	 */
+	ret = ath10k_wmi_barrier(ar);
+	if (ret) {
+		ath10k_err(ar, "failed to ping firmware: %d\n", ret);
+		return ret;
 	}
 
 	return 0;
@@ -1670,7 +1954,7 @@ int ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode,
 		goto err_wmi_detach;
 	}
 
-	status = ath10k_htt_tx_alloc(&ar->htt);
+	status = ath10k_htt_tx_start(&ar->htt);
 	if (status) {
 		ath10k_err(ar, "failed to alloc htt tx: %d\n", status);
 		goto err_wmi_detach;
@@ -1725,13 +2009,24 @@ int ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode,
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "firmware %s booted\n",
 		   ar->hw->wiphy->fw_version);
 
-	if (test_bit(WMI_SERVICE_EXT_RES_CFG_SUPPORT, ar->wmi.svc_map)) {
+	if (test_bit(WMI_SERVICE_EXT_RES_CFG_SUPPORT, ar->wmi.svc_map) &&
+	    mode == ATH10K_FIRMWARE_MODE_NORMAL) {
 		val = 0;
 		if (ath10k_peer_stats_enabled(ar))
 			val = WMI_10_4_PEER_STATS;
 
 		if (test_bit(WMI_SERVICE_BSS_CHANNEL_INFO_64, ar->wmi.svc_map))
 			val |= WMI_10_4_BSS_CHANNEL_INFO_64;
+
+		/* 10.4 firmware supports BT-Coex without reloading firmware
+		 * via pdev param. To support Bluetooth coexistence pdev param,
+		 * WMI_COEX_GPIO_SUPPORT of extended resource config should be
+		 * enabled always.
+		 */
+		if (test_bit(WMI_SERVICE_COEX_GPIO, ar->wmi.svc_map) &&
+		    test_bit(ATH10K_FW_FEATURE_BTCOEX_PARAM,
+			     ar->running_fw->fw_file.fw_features))
+			val |= WMI_10_4_COEX_GPIO_SUPPORT;
 
 		status = ath10k_mac_ext_resource_config(ar, val);
 		if (status) {
@@ -1755,6 +2050,28 @@ int ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode,
 		goto err_hif_stop;
 	}
 
+	/* Some firmware revisions do not properly set up hardware rx filter
+	 * registers.
+	 *
+	 * A known example from QCA9880 and 10.2.4 is that MAC_PCU_ADDR1_MASK
+	 * is filled with 0s instead of 1s allowing HW to respond with ACKs to
+	 * any frames that matches MAC_PCU_RX_FILTER which is also
+	 * misconfigured to accept anything.
+	 *
+	 * The ADDR1 is programmed using internal firmware structure field and
+	 * can't be (easily/sanely) reached from the driver explicitly. It is
+	 * possible to implicitly make it correct by creating a dummy vdev and
+	 * then deleting it.
+	 */
+	if (mode == ATH10K_FIRMWARE_MODE_NORMAL) {
+		status = ath10k_core_reset_rx_filter(ar);
+		if (status) {
+			ath10k_err(ar,
+				   "failed to reset rx filter: %d\n", status);
+			goto err_hif_stop;
+		}
+	}
+
 	/* If firmware indicates Full Rx Reorder support it must be used in a
 	 * slightly different manner. Let HTT code know.
 	 */
@@ -1767,7 +2084,10 @@ int ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode,
 		goto err_hif_stop;
 	}
 
-	ar->free_vdev_map = (1LL << ar->max_num_vdevs) - 1;
+	if (ar->max_num_vdevs >= 64)
+		ar->free_vdev_map = 0xFFFFFFFFFFFFFFFFLL;
+	else
+		ar->free_vdev_map = (1LL << ar->max_num_vdevs) - 1;
 
 	INIT_LIST_HEAD(&ar->arvifs);
 
@@ -1833,7 +2153,7 @@ void ath10k_core_stop(struct ath10k *ar)
 		ath10k_wait_for_suspend(ar, WMI_PDEV_SUSPEND_AND_DISABLE_INTR);
 
 	ath10k_hif_stop(ar);
-	ath10k_htt_tx_free(&ar->htt);
+	ath10k_htt_tx_stop(&ar->htt);
 	ath10k_htt_rx_free(&ar->htt);
 	ath10k_wmi_detach(ar);
 }
@@ -1899,6 +2219,10 @@ static int ath10k_core_probe_fw(struct ath10k *ar)
 		goto err_free_firmware_files;
 	}
 
+	ret = ath10k_core_check_smbios(ar);
+	if (ret)
+		ath10k_dbg(ar, ATH10K_DBG_BOOT, "bdf variant name not set.\n");
+
 	ret = ath10k_core_fetch_board_file(ar);
 	if (ret) {
 		ath10k_err(ar, "failed to fetch board file: %d\n", ret);
@@ -1914,7 +2238,7 @@ static int ath10k_core_probe_fw(struct ath10k *ar)
 		goto err_free_firmware_files;
 	}
 
-	ret = ath10k_swap_code_seg_init(ar);
+	ret = ath10k_swap_code_seg_init(ar, &ar->normal_mode_fw.fw_file);
 	if (ret) {
 		ath10k_err(ar, "failed to initialize code swap segment: %d\n",
 			   ret);
@@ -1954,6 +2278,9 @@ static void ath10k_core_register_work(struct work_struct *work)
 {
 	struct ath10k *ar = container_of(work, struct ath10k, register_work);
 	int status;
+
+	/* peer stats are enabled by default */
+	set_bit(ATH10K_FLAG_PEER_STATS, &ar->dev_flags);
 
 	status = ath10k_core_probe_fw(ar);
 	if (status) {
@@ -2062,6 +2389,7 @@ struct ath10k *ath10k_core_create(size_t priv_size, struct device *dev,
 
 	switch (hw_rev) {
 	case ATH10K_HW_QCA988X:
+	case ATH10K_HW_QCA9887:
 		ar->regs = &qca988x_regs;
 		ar->hw_values = &qca988x_values;
 		break;
@@ -2071,8 +2399,13 @@ struct ath10k *ath10k_core_create(size_t priv_size, struct device *dev,
 		ar->hw_values = &qca6174_values;
 		break;
 	case ATH10K_HW_QCA99X0:
+	case ATH10K_HW_QCA9984:
 		ar->regs = &qca99x0_regs;
 		ar->hw_values = &qca99x0_values;
+		break;
+	case ATH10K_HW_QCA9888:
+		ar->regs = &qca99x0_regs;
+		ar->hw_values = &qca9888_values;
 		break;
 	case ATH10K_HW_QCA4019:
 		ar->regs = &qca4019_regs;
@@ -2125,6 +2458,10 @@ struct ath10k *ath10k_core_create(size_t priv_size, struct device *dev,
 
 	INIT_WORK(&ar->register_work, ath10k_core_register_work);
 	INIT_WORK(&ar->restart_work, ath10k_core_restart);
+	INIT_WORK(&ar->set_coverage_class_work,
+		  ath10k_core_set_coverage_class_work);
+
+	init_dummy_netdev(&ar->napi_dev);
 
 	ret = ath10k_debug_create(ar);
 	if (ret)
@@ -2153,11 +2490,12 @@ void ath10k_core_destroy(struct ath10k *ar)
 	destroy_workqueue(ar->workqueue_aux);
 
 	ath10k_debug_destroy(ar);
+	ath10k_htt_tx_destroy(&ar->htt);
 	ath10k_wmi_free_host_mem(ar);
 	ath10k_mac_destroy(ar);
 }
 EXPORT_SYMBOL(ath10k_core_destroy);
 
 MODULE_AUTHOR("Qualcomm Atheros");
-MODULE_DESCRIPTION("Core module for QCA988X PCIe devices.");
+MODULE_DESCRIPTION("Core module for Qualcomm Atheros 802.11ac wireless LAN cards.");
 MODULE_LICENSE("Dual BSD/GPL");

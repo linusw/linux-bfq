@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/ethtool.h>
 #include <linux/io.h>
+#include "stmmac_pcs.h"
 #include "dwmac4.h"
 
 static void dwmac4_core_init(struct mac_device_info *hw, int mtu)
@@ -31,25 +32,51 @@ static void dwmac4_core_init(struct mac_device_info *hw, int mtu)
 	if (mtu > 2000)
 		value |= GMAC_CONFIG_JE;
 
+	if (hw->ps) {
+		value |= GMAC_CONFIG_TE;
+
+		if (hw->ps == SPEED_1000) {
+			value &= ~GMAC_CONFIG_PS;
+		} else {
+			value |= GMAC_CONFIG_PS;
+
+			if (hw->ps == SPEED_10)
+				value &= ~GMAC_CONFIG_FES;
+			else
+				value |= GMAC_CONFIG_FES;
+		}
+	}
+
 	writel(value, ioaddr + GMAC_CONFIG);
 
 	/* Mask GMAC interrupts */
-	writel(GMAC_INT_PMT_EN, ioaddr + GMAC_INT_EN);
+	value = GMAC_INT_DEFAULT_MASK;
+	if (hw->pmt)
+		value |= GMAC_INT_PMT_EN;
+	if (hw->pcs)
+		value |= GMAC_PCS_IRQ_DEFAULT;
+
+	writel(value, ioaddr + GMAC_INT_EN);
 }
 
-static void dwmac4_dump_regs(struct mac_device_info *hw)
+static void dwmac4_rx_queue_enable(struct mac_device_info *hw, u32 queue)
+{
+	void __iomem *ioaddr = hw->pcsr;
+	u32 value = readl(ioaddr + GMAC_RXQ_CTRL0);
+
+	value &= GMAC_RX_QUEUE_CLEAR(queue);
+	value |= GMAC_RX_AV_QUEUE_ENABLE(queue);
+
+	writel(value, ioaddr + GMAC_RXQ_CTRL0);
+}
+
+static void dwmac4_dump_regs(struct mac_device_info *hw, u32 *reg_space)
 {
 	void __iomem *ioaddr = hw->pcsr;
 	int i;
 
-	pr_debug("\tDWMAC4 regs (base addr = 0x%p)\n", ioaddr);
-
-	for (i = 0; i < GMAC_REG_NUM; i++) {
-		int offset = i * 4;
-
-		pr_debug("\tReg No. %d (offset 0x%x): 0x%08x\n", i,
-			 offset, readl(ioaddr + offset));
-	}
+	for (i = 0; i < GMAC_REG_NUM; i++)
+		reg_space[i] = readl(ioaddr + i * 4);
 }
 
 static int dwmac4_rx_ipc_enable(struct mac_device_info *hw)
@@ -80,7 +107,7 @@ static void dwmac4_pmt(struct mac_device_info *hw, unsigned long mode)
 	}
 	if (mode & WAKE_UCAST) {
 		pr_debug("GMAC: WOL on global unicast\n");
-		pmt |= global_unicast;
+		pmt |= power_down | global_unicast | wake_up_frame_en;
 	}
 
 	writel(pmt, ioaddr + GMAC_PMT);
@@ -102,6 +129,65 @@ static void dwmac4_get_umac_addr(struct mac_device_info *hw,
 
 	stmmac_dwmac4_get_mac_addr(ioaddr, addr, GMAC_ADDR_HIGH(reg_n),
 				   GMAC_ADDR_LOW(reg_n));
+}
+
+static void dwmac4_set_eee_mode(struct mac_device_info *hw,
+				bool en_tx_lpi_clockgating)
+{
+	void __iomem *ioaddr = hw->pcsr;
+	u32 value;
+
+	/* Enable the link status receive on RGMII, SGMII ore SMII
+	 * receive path and instruct the transmit to enter in LPI
+	 * state.
+	 */
+	value = readl(ioaddr + GMAC4_LPI_CTRL_STATUS);
+	value |= GMAC4_LPI_CTRL_STATUS_LPIEN | GMAC4_LPI_CTRL_STATUS_LPITXA;
+
+	if (en_tx_lpi_clockgating)
+		value |= GMAC4_LPI_CTRL_STATUS_LPITCSE;
+
+	writel(value, ioaddr + GMAC4_LPI_CTRL_STATUS);
+}
+
+static void dwmac4_reset_eee_mode(struct mac_device_info *hw)
+{
+	void __iomem *ioaddr = hw->pcsr;
+	u32 value;
+
+	value = readl(ioaddr + GMAC4_LPI_CTRL_STATUS);
+	value &= ~(GMAC4_LPI_CTRL_STATUS_LPIEN | GMAC4_LPI_CTRL_STATUS_LPITXA);
+	writel(value, ioaddr + GMAC4_LPI_CTRL_STATUS);
+}
+
+static void dwmac4_set_eee_pls(struct mac_device_info *hw, int link)
+{
+	void __iomem *ioaddr = hw->pcsr;
+	u32 value;
+
+	value = readl(ioaddr + GMAC4_LPI_CTRL_STATUS);
+
+	if (link)
+		value |= GMAC4_LPI_CTRL_STATUS_PLS;
+	else
+		value &= ~GMAC4_LPI_CTRL_STATUS_PLS;
+
+	writel(value, ioaddr + GMAC4_LPI_CTRL_STATUS);
+}
+
+static void dwmac4_set_eee_timer(struct mac_device_info *hw, int ls, int tw)
+{
+	void __iomem *ioaddr = hw->pcsr;
+	int value = ((tw & 0xffff)) | ((ls & 0x3ff) << 16);
+
+	/* Program the timers in the LPI timer control register:
+	 * LS: minimum time (ms) for which the link
+	 *  status from PHY should be ok before transmitting
+	 *  the LPI pattern.
+	 * TW: minimum time (us) for which the core waits
+	 *  after it has stopped transmitting the LPI pattern.
+	 */
+	writel(value, ioaddr + GMAC4_LPI_TIMER_CTRL);
 }
 
 static void dwmac4_set_filter(struct mac_device_info *hw,
@@ -190,39 +276,53 @@ static void dwmac4_flow_ctrl(struct mac_device_info *hw, unsigned int duplex,
 	}
 }
 
-static void dwmac4_ctrl_ane(struct mac_device_info *hw, bool restart)
+static void dwmac4_ctrl_ane(void __iomem *ioaddr, bool ane, bool srgmi_ral,
+			    bool loopback)
 {
-	void __iomem *ioaddr = hw->pcsr;
-
-	/* auto negotiation enable and External Loopback enable */
-	u32 value = GMAC_AN_CTRL_ANE | GMAC_AN_CTRL_ELE;
-
-	if (restart)
-		value |= GMAC_AN_CTRL_RAN;
-
-	writel(value, ioaddr + GMAC_AN_CTRL);
+	dwmac_ctrl_ane(ioaddr, GMAC_PCS_BASE, ane, srgmi_ral, loopback);
 }
 
-static void dwmac4_get_adv(struct mac_device_info *hw, struct rgmii_adv *adv)
+static void dwmac4_rane(void __iomem *ioaddr, bool restart)
 {
-	void __iomem *ioaddr = hw->pcsr;
-	u32 value = readl(ioaddr + GMAC_AN_ADV);
+	dwmac_rane(ioaddr, GMAC_PCS_BASE, restart);
+}
 
-	if (value & GMAC_AN_FD)
-		adv->duplex = DUPLEX_FULL;
-	if (value & GMAC_AN_HD)
-		adv->duplex |= DUPLEX_HALF;
+static void dwmac4_get_adv_lp(void __iomem *ioaddr, struct rgmii_adv *adv)
+{
+	dwmac_get_adv_lp(ioaddr, GMAC_PCS_BASE, adv);
+}
 
-	adv->pause = (value & GMAC_AN_PSE_MASK) >> GMAC_AN_PSE_SHIFT;
+/* RGMII or SMII interface */
+static void dwmac4_phystatus(void __iomem *ioaddr, struct stmmac_extra_stats *x)
+{
+	u32 status;
 
-	value = readl(ioaddr + GMAC_AN_LPA);
+	status = readl(ioaddr + GMAC_PHYIF_CONTROL_STATUS);
+	x->irq_rgmii_n++;
 
-	if (value & GMAC_AN_FD)
-		adv->lp_duplex = DUPLEX_FULL;
-	if (value & GMAC_AN_HD)
-		adv->lp_duplex = DUPLEX_HALF;
+	/* Check the link status */
+	if (status & GMAC_PHYIF_CTRLSTATUS_LNKSTS) {
+		int speed_value;
 
-	adv->lp_pause = (value & GMAC_AN_PSE_MASK) >> GMAC_AN_PSE_SHIFT;
+		x->pcs_link = 1;
+
+		speed_value = ((status & GMAC_PHYIF_CTRLSTATUS_SPEED) >>
+			       GMAC_PHYIF_CTRLSTATUS_SPEED_SHIFT);
+		if (speed_value == GMAC_PHYIF_CTRLSTATUS_SPEED_125)
+			x->pcs_speed = SPEED_1000;
+		else if (speed_value == GMAC_PHYIF_CTRLSTATUS_SPEED_25)
+			x->pcs_speed = SPEED_100;
+		else
+			x->pcs_speed = SPEED_10;
+
+		x->pcs_duplex = (status & GMAC_PHYIF_CTRLSTATUS_LNKMOD_MASK);
+
+		pr_info("Link is Up - %d/%s\n", (int)x->pcs_speed,
+			x->pcs_duplex ? "Full" : "Half");
+	} else {
+		x->pcs_link = 0;
+		pr_info("Link is Down\n");
+	}
 }
 
 static int dwmac4_irq_status(struct mac_device_info *hw,
@@ -248,11 +348,6 @@ static int dwmac4_irq_status(struct mac_device_info *hw,
 		x->irq_receive_pmt_irq_n++;
 	}
 
-	if ((intr_status & pcs_ane_irq) || (intr_status & pcs_link_irq)) {
-		readl(ioaddr + GMAC_AN_STATUS);
-		x->irq_pcs_ane_n++;
-	}
-
 	mtl_int_qx_status = readl(ioaddr + MTL_INT_STATUS);
 	/* Check MTL Interrupt: Currently only one queue is used: Q0. */
 	if (mtl_int_qx_status & MTL_INT_Q0) {
@@ -266,6 +361,10 @@ static int dwmac4_irq_status(struct mac_device_info *hw,
 			ret = CORE_IRQ_MTL_RX_OVERFLOW;
 		}
 	}
+
+	dwmac_pcs_isr(ioaddr, GMAC_PCS_BASE, intr_status, x);
+	if (intr_status & PCS_RGSMIIIS_IRQ)
+		dwmac4_phystatus(ioaddr, x);
 
 	return ret;
 }
@@ -357,14 +456,20 @@ static void dwmac4_debug(void __iomem *ioaddr, struct stmmac_extra_stats *x)
 static const struct stmmac_ops dwmac4_ops = {
 	.core_init = dwmac4_core_init,
 	.rx_ipc = dwmac4_rx_ipc_enable,
+	.rx_queue_enable = dwmac4_rx_queue_enable,
 	.dump_regs = dwmac4_dump_regs,
 	.host_irq_status = dwmac4_irq_status,
 	.flow_ctrl = dwmac4_flow_ctrl,
 	.pmt = dwmac4_pmt,
 	.set_umac_addr = dwmac4_set_umac_addr,
 	.get_umac_addr = dwmac4_get_umac_addr,
-	.ctrl_ane = dwmac4_ctrl_ane,
-	.get_adv = dwmac4_get_adv,
+	.set_eee_mode = dwmac4_set_eee_mode,
+	.reset_eee_mode = dwmac4_reset_eee_mode,
+	.set_eee_timer = dwmac4_set_eee_timer,
+	.set_eee_pls = dwmac4_set_eee_pls,
+	.pcs_ctrl_ane = dwmac4_ctrl_ane,
+	.pcs_rane = dwmac4_rane,
+	.pcs_get_adv_lp = dwmac4_get_adv_lp,
 	.debug = dwmac4_debug,
 	.set_filter = dwmac4_set_filter,
 };
@@ -394,6 +499,12 @@ struct mac_device_info *dwmac4_setup(void __iomem *ioaddr, int mcbins,
 	mac->link.speed = GMAC_CONFIG_FES;
 	mac->mii.addr = GMAC_MDIO_ADDR;
 	mac->mii.data = GMAC_MDIO_DATA;
+	mac->mii.addr_shift = 21;
+	mac->mii.addr_mask = GENMASK(25, 21);
+	mac->mii.reg_shift = 16;
+	mac->mii.reg_mask = GENMASK(20, 16);
+	mac->mii.clk_csr_shift = 8;
+	mac->mii.clk_csr_mask = GENMASK(11, 8);
 
 	/* Get and dump the chip ID */
 	*synopsys_id = stmmac_get_synopsys_id(hwid);

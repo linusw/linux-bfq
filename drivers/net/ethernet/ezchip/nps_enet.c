@@ -24,6 +24,14 @@
 
 #define DRV_NAME			"nps_mgt_enet"
 
+static inline bool nps_enet_is_tx_pending(struct nps_enet_priv *priv)
+{
+	u32 tx_ctrl_value = nps_enet_reg_get(priv, NPS_ENET_REG_TX_CTL);
+	u32 tx_ctrl_ct = (tx_ctrl_value & TX_CTL_CT_MASK) >> TX_CTL_CT_SHIFT;
+
+	return (!tx_ctrl_ct && priv->tx_skb);
+}
+
 static void nps_enet_clean_rx_fifo(struct net_device *ndev, u32 frame_len)
 {
 	struct nps_enet_priv *priv = netdev_priv(ndev);
@@ -46,16 +54,17 @@ static void nps_enet_read_rx_fifo(struct net_device *ndev,
 	if (dst_is_aligned) {
 		ioread32_rep(priv->regs_base + NPS_ENET_REG_RX_BUF, reg, len);
 		reg += len;
-	}
-	else { /* !dst_is_aligned */
+	} else { /* !dst_is_aligned */
 		for (i = 0; i < len; i++, reg++) {
 			u32 buf = nps_enet_reg_get(priv, NPS_ENET_REG_RX_BUF);
+
 			put_unaligned_be32(buf, reg);
 		}
 	}
 	/* copy last bytes (if any) */
 	if (last) {
 		u32 buf;
+
 		ioread32_rep(priv->regs_base + NPS_ENET_REG_RX_BUF, &buf, 1);
 		memcpy((u8 *)reg, &buf, last);
 	}
@@ -140,12 +149,11 @@ static void nps_enet_tx_handler(struct net_device *ndev)
 {
 	struct nps_enet_priv *priv = netdev_priv(ndev);
 	u32 tx_ctrl_value = nps_enet_reg_get(priv, NPS_ENET_REG_TX_CTL);
-	u32 tx_ctrl_ct = (tx_ctrl_value & TX_CTL_CT_MASK) >> TX_CTL_CT_SHIFT;
 	u32 tx_ctrl_et = (tx_ctrl_value & TX_CTL_ET_MASK) >> TX_CTL_ET_SHIFT;
 	u32 tx_ctrl_nt = (tx_ctrl_value & TX_CTL_NT_MASK) >> TX_CTL_NT_SHIFT;
 
 	/* Check if we got TX */
-	if (!priv->tx_skb || tx_ctrl_ct)
+	if (!nps_enet_is_tx_pending(priv))
 		return;
 
 	/* Ack Tx ctrl register */
@@ -181,13 +189,8 @@ static int nps_enet_poll(struct napi_struct *napi, int budget)
 
 	nps_enet_tx_handler(ndev);
 	work_done = nps_enet_rx_handler(ndev);
-	if (work_done < budget) {
+	if ((work_done < budget) && napi_complete_done(napi, work_done)) {
 		u32 buf_int_enable_value = 0;
-		u32 tx_ctrl_value = nps_enet_reg_get(priv, NPS_ENET_REG_TX_CTL);
-		u32 tx_ctrl_ct =
-			(tx_ctrl_value & TX_CTL_CT_MASK) >> TX_CTL_CT_SHIFT;
-
-		napi_complete(napi);
 
 		/* set tx_done and rx_rdy bits */
 		buf_int_enable_value |= NPS_ENET_ENABLE << RX_RDY_SHIFT;
@@ -204,8 +207,7 @@ static int nps_enet_poll(struct napi_struct *napi, int budget)
 		 * the two code lines below will solve this situation by
 		 * re-adding ourselves to the poll list.
 		 */
-
-		if (priv->tx_skb && !tx_ctrl_ct) {
+		if (nps_enet_is_tx_pending(priv)) {
 			nps_enet_reg_set(priv, NPS_ENET_REG_BUF_INT_ENABLE, 0);
 			napi_reschedule(napi);
 		}
@@ -230,11 +232,9 @@ static irqreturn_t nps_enet_irq_handler(s32 irq, void *dev_instance)
 	struct net_device *ndev = dev_instance;
 	struct nps_enet_priv *priv = netdev_priv(ndev);
 	u32 rx_ctrl_value = nps_enet_reg_get(priv, NPS_ENET_REG_RX_CTL);
-	u32 tx_ctrl_value = nps_enet_reg_get(priv, NPS_ENET_REG_TX_CTL);
-	u32 tx_ctrl_ct = (tx_ctrl_value & TX_CTL_CT_MASK) >> TX_CTL_CT_SHIFT;
 	u32 rx_ctrl_cr = (rx_ctrl_value & RX_CTL_CR_MASK) >> RX_CTL_CR_SHIFT;
 
-	if ((!tx_ctrl_ct && priv->tx_skb) || rx_ctrl_cr)
+	if (nps_enet_is_tx_pending(priv) || rx_ctrl_cr)
 		if (likely(napi_schedule_prep(&priv->napi))) {
 			nps_enet_reg_set(priv, NPS_ENET_REG_BUF_INT_ENABLE, 0);
 			__napi_schedule(&priv->napi);
@@ -460,7 +460,6 @@ static void nps_enet_set_rx_mode(struct net_device *ndev)
 			 | NPS_ENET_ENABLE << CFG_2_DISK_DA_SHIFT;
 		ge_mac_cfg_2_value = (ge_mac_cfg_2_value & ~CFG_2_DISK_MC_MASK)
 			 | NPS_ENET_ENABLE << CFG_2_DISK_MC_SHIFT;
-
 	}
 
 	nps_enet_reg_set(priv, NPS_ENET_REG_GE_MAC_CFG_2, ge_mac_cfg_2_value);
@@ -668,6 +667,7 @@ static const struct of_device_id nps_enet_dt_ids[] = {
 	{ .compatible = "ezchip,nps-mgt-enet" },
 	{ /* Sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, nps_enet_dt_ids);
 
 static struct platform_driver nps_enet_driver = {
 	.probe = nps_enet_probe,

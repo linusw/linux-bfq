@@ -549,6 +549,7 @@ enum blk_eh_timer_return ata_scsi_timed_out(struct scsi_cmnd *cmd)
 	DPRINTK("EXIT, ret=%d\n", ret);
 	return ret;
 }
+EXPORT_SYMBOL(ata_scsi_timed_out);
 
 static void ata_eh_unload(struct ata_port *ap)
 {
@@ -2033,7 +2034,7 @@ static int speed_down_verdict_cb(struct ata_ering_entry *ent, void *void_arg)
  *	This is to expedite speed down decisions right after device is
  *	initially configured.
  *
- *	The followings are speed down rules.  #1 and #2 deal with
+ *	The following are speed down rules.  #1 and #2 deal with
  *	DUBIOUS errors.
  *
  *	1. If more than one DUBIOUS_ATA_BUS or DUBIOUS_TOUT_HSM errors
@@ -2606,17 +2607,39 @@ static void ata_eh_link_report(struct ata_link *link)
 				[DMA_TO_DEVICE]		= "out",
 				[DMA_FROM_DEVICE]	= "in",
 			};
-			static const char *prot_str[] = {
-				[ATA_PROT_PIO]		= "pio",
-				[ATA_PROT_DMA]		= "dma",
-				[ATA_PROT_NCQ]		= "ncq",
-				[ATAPI_PROT_PIO]	= "pio",
-				[ATAPI_PROT_DMA]	= "dma",
-			};
+			const char *prot_str = NULL;
 
+			switch (qc->tf.protocol) {
+			case ATA_PROT_UNKNOWN:
+				prot_str = "unknown";
+				break;
+			case ATA_PROT_NODATA:
+				prot_str = "nodata";
+				break;
+			case ATA_PROT_PIO:
+				prot_str = "pio";
+				break;
+			case ATA_PROT_DMA:
+				prot_str = "dma";
+				break;
+			case ATA_PROT_NCQ:
+				prot_str = "ncq dma";
+				break;
+			case ATA_PROT_NCQ_NODATA:
+				prot_str = "ncq nodata";
+				break;
+			case ATAPI_PROT_NODATA:
+				prot_str = "nodata";
+				break;
+			case ATAPI_PROT_PIO:
+				prot_str = "pio";
+				break;
+			case ATAPI_PROT_DMA:
+				prot_str = "dma";
+				break;
+			}
 			snprintf(data_buf, sizeof(data_buf), " %s %u %s",
-				 prot_str[qc->tf.protocol], qc->nbytes,
-				 dma_str[qc->dma_dir]);
+				 prot_str, qc->nbytes, dma_str[qc->dma_dir]);
 		}
 
 		if (ata_is_atapi(qc->tf.protocol)) {
@@ -3177,7 +3200,7 @@ static void ata_eh_park_issue_cmd(struct ata_device *dev, int park)
 	}
 
 	tf.flags |= ATA_TFLAG_DEVICE | ATA_TFLAG_ISADDR;
-	tf.protocol |= ATA_PROT_NODATA;
+	tf.protocol = ATA_PROT_NODATA;
 	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_NONE, NULL, 0, 0);
 	if (park && (err_mask || tf.lbal != 0xc4)) {
 		ata_dev_err(dev, "head unload failed!\n");

@@ -101,7 +101,7 @@ static void iwl_mvm_pass_packet_to_mac80211(struct iwl_mvm *mvm,
 					    struct napi_struct *napi,
 					    struct sk_buff *skb,
 					    struct ieee80211_hdr *hdr, u16 len,
-					    u32 ampdu_status, u8 crypt_len,
+					    u8 crypt_len,
 					    struct iwl_rx_cmd_buffer *rxb)
 {
 	unsigned int hdrlen, fraglen;
@@ -268,7 +268,6 @@ void iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct napi_struct *napi,
 	struct ieee80211_sta *sta = NULL;
 	struct sk_buff *skb;
 	u32 len;
-	u32 ampdu_status;
 	u32 rate_n_flags;
 	u32 rx_pkt_status;
 	u8 crypt_len = 0;
@@ -354,13 +353,22 @@ void iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct napi_struct *napi,
 
 	if (sta) {
 		struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
+		struct ieee80211_vif *tx_blocked_vif =
+			rcu_dereference(mvm->csa_tx_blocked_vif);
 
 		/* We have tx blocked stations (with CS bit). If we heard
 		 * frames from a blocked station on a new channel we can
 		 * TX to it again.
 		 */
-		if (unlikely(mvm->csa_tx_block_bcn_timeout))
-			iwl_mvm_sta_modify_disable_tx_ap(mvm, sta, false);
+		if (unlikely(tx_blocked_vif) &&
+		    mvmsta->vif == tx_blocked_vif) {
+			struct iwl_mvm_vif *mvmvif =
+				iwl_mvm_vif_from_mac80211(tx_blocked_vif);
+
+			if (mvmvif->csa_target_freq == rx_status->freq)
+				iwl_mvm_sta_modify_disable_tx_ap(mvm, sta,
+								 false);
+		}
 
 		rs_update_last_rssi(mvm, &mvmsta->lq_sta, rx_status);
 
@@ -471,7 +479,7 @@ void iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct napi_struct *napi,
 		iwl_mvm_ref(mvm, IWL_MVM_REF_RX);
 
 	iwl_mvm_pass_packet_to_mac80211(mvm, sta, napi, skb, hdr, len,
-					ampdu_status, crypt_len, rxb);
+					crypt_len, rxb);
 
 	if (take_ref)
 		iwl_mvm_unref(mvm, IWL_MVM_REF_RX);
@@ -489,7 +497,7 @@ struct iwl_mvm_stat_data {
 	struct iwl_mvm *mvm;
 	__le32 mac_id;
 	u8 beacon_filter_average_energy;
-	struct mvm_statistics_general_v8 *general;
+	void *general;
 };
 
 static void iwl_mvm_stat_iterator(void *_data, u8 *mac,
@@ -509,10 +517,26 @@ static void iwl_mvm_stat_iterator(void *_data, u8 *mac,
 	 * the notification directly.
 	 */
 	if (data->general) {
-		mvmvif->beacon_stats.num_beacons =
-			le32_to_cpu(data->general->beacon_counter[mvmvif->id]);
-		mvmvif->beacon_stats.avg_signal =
-			-data->general->beacon_average_energy[mvmvif->id];
+		u16 vif_id = mvmvif->id;
+
+		if (iwl_mvm_is_cdb_supported(mvm)) {
+			struct mvm_statistics_general_cdb *general =
+				data->general;
+
+			mvmvif->beacon_stats.num_beacons =
+				le32_to_cpu(general->beacon_counter[vif_id]);
+			mvmvif->beacon_stats.avg_signal =
+				-general->beacon_average_energy[vif_id];
+		} else {
+			struct mvm_statistics_general_v8 *general =
+				data->general;
+
+			mvmvif->beacon_stats.num_beacons =
+				le32_to_cpu(general->beacon_counter[vif_id]);
+			mvmvif->beacon_stats.avg_signal =
+				-general->beacon_average_energy[vif_id];
+		}
+
 	}
 
 	if (mvmvif->id != id)
@@ -562,6 +586,7 @@ static void iwl_mvm_stat_iterator(void *_data, u8 *mac,
 		ieee80211_cqm_rssi_notify(
 			vif,
 			NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW,
+			sig,
 			GFP_KERNEL);
 	} else if (sig > thold &&
 		   (last_event == 0 || sig > last_event + hyst)) {
@@ -571,6 +596,7 @@ static void iwl_mvm_stat_iterator(void *_data, u8 *mac,
 		ieee80211_cqm_rssi_notify(
 			vif,
 			NL80211_CQM_RSSI_THRESHOLD_EVENT_HIGH,
+			sig,
 			GFP_KERNEL);
 	}
 }
@@ -606,30 +632,68 @@ iwl_mvm_rx_stats_check_trigger(struct iwl_mvm *mvm, struct iwl_rx_packet *pkt)
 void iwl_mvm_handle_rx_statistics(struct iwl_mvm *mvm,
 				  struct iwl_rx_packet *pkt)
 {
-	struct iwl_notif_statistics_v10 *stats = (void *)&pkt->data;
+	struct iwl_notif_statistics_cdb *stats = (void *)&pkt->data;
 	struct iwl_mvm_stat_data data = {
 		.mvm = mvm,
 	};
-	u32 temperature;
+	int expected_size;
 
-	if (iwl_rx_packet_payload_len(pkt) != sizeof(*stats))
+	if (iwl_mvm_is_cdb_supported(mvm))
+		expected_size = sizeof(*stats);
+	else if (iwl_mvm_has_new_rx_api(mvm))
+		expected_size = sizeof(struct iwl_notif_statistics_v11);
+	else
+		expected_size = sizeof(struct iwl_notif_statistics_v10);
+
+	if (iwl_rx_packet_payload_len(pkt) != expected_size)
 		goto invalid;
 
-	temperature = le32_to_cpu(stats->general.radio_temperature);
 	data.mac_id = stats->rx.general.mac_id;
 	data.beacon_filter_average_energy =
-		stats->general.beacon_filter_average_energy;
+		stats->general.common.beacon_filter_average_energy;
 
 	iwl_mvm_update_rx_statistics(mvm, &stats->rx);
 
-	mvm->radio_stats.rx_time = le64_to_cpu(stats->general.rx_time);
-	mvm->radio_stats.tx_time = le64_to_cpu(stats->general.tx_time);
+	mvm->radio_stats.rx_time = le64_to_cpu(stats->general.common.rx_time);
+	mvm->radio_stats.tx_time = le64_to_cpu(stats->general.common.tx_time);
 	mvm->radio_stats.on_time_rf =
-		le64_to_cpu(stats->general.on_time_rf);
+		le64_to_cpu(stats->general.common.on_time_rf);
 	mvm->radio_stats.on_time_scan =
-		le64_to_cpu(stats->general.on_time_scan);
+		le64_to_cpu(stats->general.common.on_time_scan);
 
 	data.general = &stats->general;
+	if (iwl_mvm_has_new_rx_api(mvm)) {
+		int i;
+		u8 *energy;
+		__le32 *bytes, *air_time;
+
+		if (!iwl_mvm_is_cdb_supported(mvm)) {
+			struct iwl_notif_statistics_v11 *v11 =
+				(void *)&pkt->data;
+
+			energy = (void *)&v11->load_stats.avg_energy;
+			bytes = (void *)&v11->load_stats.byte_count;
+			air_time = (void *)&v11->load_stats.air_time;
+		} else {
+			energy = (void *)&stats->load_stats.avg_energy;
+			bytes = (void *)&stats->load_stats.byte_count;
+			air_time = (void *)&stats->load_stats.air_time;
+		}
+
+		rcu_read_lock();
+		for (i = 0; i < IWL_MVM_STATION_COUNT; i++) {
+			struct iwl_mvm_sta *sta;
+
+			if (!energy[i])
+				continue;
+
+			sta = iwl_mvm_sta_from_staid_rcu(mvm, i);
+			if (!sta)
+				continue;
+			sta->avg_energy = energy[i];
+		}
+		rcu_read_unlock();
+	}
 
 	iwl_mvm_rx_stats_check_trigger(mvm, pkt);
 

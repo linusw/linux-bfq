@@ -41,7 +41,7 @@
    this, and makes other things simpler.  Anton?
    --RR.  */
 
-#if defined(_CALL_ELF) && _CALL_ELF == 2
+#ifdef PPC64_ELF_ABI_v2
 
 /* An address is simply the address of the function. */
 typedef unsigned long func_desc_t;
@@ -132,7 +132,7 @@ static u32 ppc64_stub_insns[] = {
 	/* Save current r2 value in magic place on the stack. */
 	0xf8410000|R2_STACK_OFFSET,	/* std     r2,R2_STACK_OFFSET(r1) */
 	0xe98b0020,			/* ld      r12,32(r11) */
-#if !defined(_CALL_ELF) || _CALL_ELF != 2
+#ifdef PPC64_ELF_ABI_v1
 	/* Set up new r2 from function descriptor */
 	0xe84b0028,			/* ld      r2,40(r11) */
 #endif
@@ -286,14 +286,6 @@ static void dedotify_versions(struct modversion_info *vers,
 	for (end = (void *)vers + size; vers < end; vers++)
 		if (vers->name[0] == '.') {
 			memmove(vers->name, vers->name+1, strlen(vers->name));
-#ifdef ARCH_RELOCATES_KCRCTAB
-			/* The TOC symbol has no CRC computed. To avoid CRC
-			 * check failing, we must force it to the expected
-			 * value (see CRC check in module.c).
-			 */
-			if (!strcmp(vers->name, "TOC."))
-				vers->crc = -(unsigned long)reloc_start;
-#endif
 		}
 }
 
@@ -494,9 +486,10 @@ static bool is_early_mcount_callsite(u32 *instruction)
    restore r2. */
 static int restore_r2(u32 *instruction, struct module *me)
 {
+	if (is_early_mcount_callsite(instruction - 1))
+		return 1;
+
 	if (*instruction != PPC_INST_NOP) {
-		if (is_early_mcount_callsite(instruction - 1))
-			return 1;
 		pr_err("%s: Expect noop after relocate, got %08x\n",
 		       me->name, *instruction);
 		return 0;
@@ -649,6 +642,11 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 		case R_PPC64_REL64:
 			/* 64 bits relative (used by features fixups) */
 			*location = value - (unsigned long)location;
+			break;
+
+		case R_PPC64_REL32:
+			/* 32 bits relative (used by relative exception tables) */
+			*(u32 *)location = value - (unsigned long)location;
 			break;
 
 		case R_PPC64_TOCSAVE:

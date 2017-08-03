@@ -59,6 +59,9 @@ __be32		nfsd4_vfs_fallocate(struct svc_rqst *, struct svc_fh *,
 __be32		nfsd4_clone_file_range(struct file *, u64, struct file *,
 			u64, u64);
 #endif /* CONFIG_NFSD_V4 */
+__be32		nfsd_create_locked(struct svc_rqst *, struct svc_fh *,
+				char *name, int len, struct iattr *attrs,
+				int type, dev_t rdev, struct svc_fh *res);
 __be32		nfsd_create(struct svc_rqst *, struct svc_fh *,
 				char *name, int len, struct iattr *attrs,
 				int type, dev_t rdev, struct svc_fh *res);
@@ -80,12 +83,12 @@ __be32		nfsd_readv(struct file *, loff_t, struct kvec *, int,
 				unsigned long *);
 __be32 		nfsd_read(struct svc_rqst *, struct svc_fh *,
 				loff_t, struct kvec *, int, unsigned long *);
-__be32 		nfsd_write(struct svc_rqst *, struct svc_fh *,struct file *,
-				loff_t, struct kvec *,int, unsigned long *, int *);
+__be32 		nfsd_write(struct svc_rqst *, struct svc_fh *, loff_t,
+				struct kvec *, int, unsigned long *, int);
 __be32		nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp,
 				struct file *file, loff_t offset,
 				struct kvec *vec, int vlen, unsigned long *cnt,
-				int *stablep);
+				int stable);
 __be32		nfsd_readlink(struct svc_rqst *, struct svc_fh *,
 				char *, int *);
 __be32		nfsd_symlink(struct svc_rqst *, struct svc_fh *,
@@ -93,6 +96,8 @@ __be32		nfsd_symlink(struct svc_rqst *, struct svc_fh *,
 				struct svc_fh *res);
 __be32		nfsd_link(struct svc_rqst *, struct svc_fh *,
 				char *, int, struct svc_fh *);
+ssize_t		nfsd_copy_file_range(struct file *, u64,
+				     struct file *, u64, u64);
 __be32		nfsd_rename(struct svc_rqst *,
 				struct svc_fh *, char *, int,
 				struct svc_fh *, char *, int);
@@ -130,7 +135,8 @@ static inline __be32 fh_getattr(struct svc_fh *fh, struct kstat *stat)
 {
 	struct path p = {.mnt = fh->fh_export->ex_path.mnt,
 			 .dentry = fh->fh_dentry};
-	return nfserrno(vfs_getattr(&p, stat));
+	return nfserrno(vfs_getattr(&p, stat, STATX_BASIC_STATS,
+				    AT_STATX_SYNC_AS_STAT));
 }
 
 static inline int nfsd_create_is_exclusive(int createmode)

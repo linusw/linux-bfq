@@ -54,6 +54,7 @@
 /* for snoop control */
 #include <asm/pgtable.h>
 #include <asm/cacheflush.h>
+#include <asm/cpufeature.h>
 #endif
 #include <sound/core.h>
 #include <sound/initval.h>
@@ -127,7 +128,7 @@ static int bdl_pos_adj[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)] = -1};
 static int probe_mask[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)] = -1};
 static int probe_only[SNDRV_CARDS];
 static int jackpoll_ms[SNDRV_CARDS];
-static bool single_cmd;
+static int single_cmd = -1;
 static int enable_msi = -1;
 #ifdef CONFIG_SND_HDA_PATCH_LOADER
 static char *patch[SNDRV_CARDS];
@@ -156,7 +157,7 @@ module_param_array(probe_only, int, NULL, 0444);
 MODULE_PARM_DESC(probe_only, "Only probing and no codec initialization.");
 module_param_array(jackpoll_ms, int, NULL, 0444);
 MODULE_PARM_DESC(jackpoll_ms, "Ms between polling for jack events (default = 0, using unsol events only)");
-module_param(single_cmd, bool, 0444);
+module_param(single_cmd, bint, 0444);
 MODULE_PARM_DESC(single_cmd, "Use single command to communicate with codecs "
 		 "(for debugging only).");
 module_param(enable_msi, bint, 0444);
@@ -340,8 +341,7 @@ enum {
 
 /* quirks for Nvidia */
 #define AZX_DCAPS_PRESET_NVIDIA \
-	(AZX_DCAPS_NO_MSI | /*AZX_DCAPS_ALIGN_BUFSIZE |*/ \
-	 AZX_DCAPS_NO_64BIT | AZX_DCAPS_CORBRP_SELF_CLEAR |\
+	(AZX_DCAPS_NO_MSI | AZX_DCAPS_CORBRP_SELF_CLEAR |\
 	 AZX_DCAPS_SNOOP_TYPE(NVIDIA))
 
 #define AZX_DCAPS_PRESET_CTHDA \
@@ -906,20 +906,23 @@ static int azx_resume(struct device *dev)
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct azx *chip;
 	struct hda_intel *hda;
+	struct hdac_bus *bus;
 
 	if (!card)
 		return 0;
 
 	chip = card->private_data;
 	hda = container_of(chip, struct hda_intel, chip);
+	bus = azx_bus(chip);
 	if (chip->disabled || hda->init_failed || !chip->running)
 		return 0;
 
-	if (chip->driver_caps & AZX_DCAPS_I915_POWERWELL
-		&& hda->need_i915_power) {
-		snd_hdac_display_power(azx_bus(chip), true);
-		snd_hdac_i915_set_bclk(azx_bus(chip));
+	if (chip->driver_caps & AZX_DCAPS_I915_POWERWELL) {
+		snd_hdac_display_power(bus, true);
+		if (hda->need_i915_power)
+			snd_hdac_i915_set_bclk(bus);
 	}
+
 	if (chip->msi)
 		if (pci_enable_msi(pci) < 0)
 			chip->msi = 0;
@@ -928,6 +931,11 @@ static int azx_resume(struct device *dev)
 	azx_init_pci(chip);
 
 	hda_intel_init_chip(chip, true);
+
+	/* power down again for link-controlled chips */
+	if ((chip->driver_caps & AZX_DCAPS_I915_POWERWELL) &&
+	    !hda->need_i915_power)
+		snd_hdac_display_power(bus, false);
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 
@@ -1008,6 +1016,7 @@ static int azx_runtime_resume(struct device *dev)
 
 	chip = card->private_data;
 	hda = container_of(chip, struct hda_intel, chip);
+	bus = azx_bus(chip);
 	if (chip->disabled || hda->init_failed)
 		return 0;
 
@@ -1015,15 +1024,9 @@ static int azx_runtime_resume(struct device *dev)
 		return 0;
 
 	if (chip->driver_caps & AZX_DCAPS_I915_POWERWELL) {
-		bus = azx_bus(chip);
-		if (hda->need_i915_power) {
-			snd_hdac_display_power(bus, true);
+		snd_hdac_display_power(bus, true);
+		if (hda->need_i915_power)
 			snd_hdac_i915_set_bclk(bus);
-		} else {
-			/* toggle codec wakeup bit for STATESTS read */
-			snd_hdac_set_codec_wakeup(bus, true);
-			snd_hdac_set_codec_wakeup(bus, false);
-		}
 	}
 
 	/* Read STATESTS before controller reset */
@@ -1042,6 +1045,11 @@ static int azx_runtime_resume(struct device *dev)
 	/* disable controller Wake Up event*/
 	azx_writew(chip, WAKEEN, azx_readw(chip, WAKEEN) &
 			~STATESTS_INT_MASK);
+
+	/* power down again for link-controlled chips */
+	if ((chip->driver_caps & AZX_DCAPS_I915_POWERWELL) &&
+	    !hda->need_i915_power)
+		snd_hdac_display_power(bus, false);
 
 	trace_azx_runtime_resume(chip);
 	return 0;
@@ -1588,7 +1596,11 @@ static int azx_create(struct snd_card *card, struct pci_dev *pci,
 
 	check_probe_mask(chip, dev);
 
-	chip->single_cmd = single_cmd;
+	if (single_cmd < 0) /* allow fallback to single_cmd at errors */
+		chip->fallback_to_single_cmd = 1;
+	else /* explicitly set to single_cmd or not */
+		chip->single_cmd = single_cmd;
+
 	azx_check_snoop_available(chip);
 
 	if (bdl_pos_adj[dev] < 0)
@@ -1655,6 +1667,22 @@ static int azx_first_init(struct azx *chip)
 		return -ENXIO;
 	}
 
+	if (IS_SKL_PLUS(pci))
+		snd_hdac_bus_parse_capabilities(bus);
+
+	/*
+	 * Some Intel CPUs has always running timer (ART) feature and
+	 * controller may have Global time sync reporting capability, so
+	 * check both of these before declaring synchronized time reporting
+	 * capability SNDRV_PCM_INFO_HAS_LINK_SYNCHRONIZED_ATIME
+	 */
+	chip->gts_present = false;
+
+#ifdef CONFIG_X86
+	if (bus->ppcap && boot_cpu_has(X86_FEATURE_ART))
+		chip->gts_present = true;
+#endif
+
 	if (chip->msi) {
 		if (chip->driver_caps & AZX_DCAPS_NO_MSI64) {
 			dev_dbg(card->dev, "Disabling 64bit MSI\n");
@@ -1690,6 +1718,10 @@ static int azx_first_init(struct azx *chip)
 			pci_dev_put(p_smbus);
 		}
 	}
+
+	/* NVidia hardware normally only supports up to 40 bits of DMA */
+	if (chip->pci->vendor == PCI_VENDOR_ID_NVIDIA)
+		dma_bits = 40;
 
 	/* disable 64bit DMA address on some devices */
 	if (chip->driver_caps & AZX_DCAPS_NO_64BIT) {
@@ -1745,6 +1777,14 @@ static int azx_first_init(struct azx *chip)
 	chip->capture_index_offset = 0;
 	chip->playback_index_offset = chip->capture_streams;
 	chip->num_streams = chip->playback_streams + chip->capture_streams;
+
+	/* sanity check for the SDxCTL.STRM field overflow */
+	if (chip->num_streams > 15 &&
+	    (chip->driver_caps & AZX_DCAPS_SEPARATE_STREAM_TAG) == 0) {
+		dev_warn(chip->card->dev, "number of I/O streams is %d, "
+			 "forcing separate stream tags", chip->num_streams);
+		chip->driver_caps |= AZX_DCAPS_SEPARATE_STREAM_TAG;
+	}
 
 	/* initialize streams */
 	err = azx_init_streams(chip);
@@ -2127,7 +2167,20 @@ static void azx_remove(struct pci_dev *pci)
 		/* cancel the pending probing work */
 		chip = card->private_data;
 		hda = container_of(chip, struct hda_intel, chip);
+		/* FIXME: below is an ugly workaround.
+		 * Both device_release_driver() and driver_probe_device()
+		 * take *both* the device's and its parent's lock before
+		 * calling the remove() and probe() callbacks.  The codec
+		 * probe takes the locks of both the codec itself and its
+		 * parent, i.e. the PCI controller dev.  Meanwhile, when
+		 * the PCI controller is unbound, it takes its lock, too
+		 * ==> ouch, a deadlock!
+		 * As a workaround, we unlock temporarily here the controller
+		 * device during cancel_work_sync() call.
+		 */
+		device_unlock(&pci->dev);
 		cancel_work_sync(&hda->probe_work);
+		device_lock(&pci->dev);
 
 		snd_card_free(card);
 	}
@@ -2169,9 +2222,9 @@ static const struct pci_device_id azx_ids[] = {
 	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_PCH },
 	/* Lewisburg */
 	{ PCI_DEVICE(0x8086, 0xa1f0),
-	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_PCH },
+	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_SKYLAKE },
 	{ PCI_DEVICE(0x8086, 0xa270),
-	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_PCH },
+	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_SKYLAKE },
 	/* Lynx Point-LP */
 	{ PCI_DEVICE(0x8086, 0x9c20),
 	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_PCH },
@@ -2201,6 +2254,9 @@ static const struct pci_device_id azx_ids[] = {
 	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_BROXTON },
 	/* Broxton-T */
 	{ PCI_DEVICE(0x8086, 0x1a98),
+	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_BROXTON },
+	/* Gemini-Lake */
+	{ PCI_DEVICE(0x8086, 0x3198),
 	  .driver_data = AZX_DRIVER_PCH | AZX_DCAPS_INTEL_BROXTON },
 	/* Haswell */
 	{ PCI_DEVICE(0x8086, 0x0a0c),
@@ -2265,6 +2321,8 @@ static const struct pci_device_id azx_ids[] = {
 	{ PCI_DEVICE(0x1022, 0x780d),
 	  .driver_data = AZX_DRIVER_GENERIC | AZX_DCAPS_PRESET_ATI_SB },
 	/* ATI HDMI */
+	{ PCI_DEVICE(0x1002, 0x0002),
+	  .driver_data = AZX_DRIVER_ATIHDMI_NS | AZX_DCAPS_PRESET_ATI_HDMI_NS },
 	{ PCI_DEVICE(0x1002, 0x1308),
 	  .driver_data = AZX_DRIVER_ATIHDMI_NS | AZX_DCAPS_PRESET_ATI_HDMI_NS },
 	{ PCI_DEVICE(0x1002, 0x157a),

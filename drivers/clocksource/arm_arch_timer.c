@@ -8,6 +8,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
+
+#define pr_fmt(fmt)	"arm_arch_timer: " fmt
+
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -21,6 +24,7 @@
 #include <linux/of_address.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+#include <linux/sched/clock.h>
 #include <linux/sched_clock.h>
 #include <linux/acpi.h>
 
@@ -78,6 +82,7 @@ static struct clock_event_device __percpu *arch_timer_evt;
 static enum ppi_nr arch_timer_uses_ppi = VIRT_PPI;
 static bool arch_timer_c3stop;
 static bool arch_timer_mem_use_virtual;
+static bool arch_counter_suspend_stop;
 
 static bool evtstrm_enable = IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
 
@@ -90,6 +95,109 @@ early_param("clocksource.arm_arch_timer.evtstrm", early_evtstrm_cfg);
 /*
  * Architected system timer support.
  */
+
+#ifdef CONFIG_FSL_ERRATUM_A008585
+/*
+ * The number of retries is an arbitrary value well beyond the highest number
+ * of iterations the loop has been observed to take.
+ */
+#define __fsl_a008585_read_reg(reg) ({			\
+	u64 _old, _new;					\
+	int _retries = 200;				\
+							\
+	do {						\
+		_old = read_sysreg(reg);		\
+		_new = read_sysreg(reg);		\
+		_retries--;				\
+	} while (unlikely(_old != _new) && _retries);	\
+							\
+	WARN_ON_ONCE(!_retries);			\
+	_new;						\
+})
+
+static u32 notrace fsl_a008585_read_cntp_tval_el0(void)
+{
+	return __fsl_a008585_read_reg(cntp_tval_el0);
+}
+
+static u32 notrace fsl_a008585_read_cntv_tval_el0(void)
+{
+	return __fsl_a008585_read_reg(cntv_tval_el0);
+}
+
+static u64 notrace fsl_a008585_read_cntvct_el0(void)
+{
+	return __fsl_a008585_read_reg(cntvct_el0);
+}
+#endif
+
+#ifdef CONFIG_HISILICON_ERRATUM_161010101
+/*
+ * Verify whether the value of the second read is larger than the first by
+ * less than 32 is the only way to confirm the value is correct, so clear the
+ * lower 5 bits to check whether the difference is greater than 32 or not.
+ * Theoretically the erratum should not occur more than twice in succession
+ * when reading the system counter, but it is possible that some interrupts
+ * may lead to more than twice read errors, triggering the warning, so setting
+ * the number of retries far beyond the number of iterations the loop has been
+ * observed to take.
+ */
+#define __hisi_161010101_read_reg(reg) ({				\
+	u64 _old, _new;						\
+	int _retries = 50;					\
+								\
+	do {							\
+		_old = read_sysreg(reg);			\
+		_new = read_sysreg(reg);			\
+		_retries--;					\
+	} while (unlikely((_new - _old) >> 5) && _retries);	\
+								\
+	WARN_ON_ONCE(!_retries);				\
+	_new;							\
+})
+
+static u32 notrace hisi_161010101_read_cntp_tval_el0(void)
+{
+	return __hisi_161010101_read_reg(cntp_tval_el0);
+}
+
+static u32 notrace hisi_161010101_read_cntv_tval_el0(void)
+{
+	return __hisi_161010101_read_reg(cntv_tval_el0);
+}
+
+static u64 notrace hisi_161010101_read_cntvct_el0(void)
+{
+	return __hisi_161010101_read_reg(cntvct_el0);
+}
+#endif
+
+#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
+const struct arch_timer_erratum_workaround *timer_unstable_counter_workaround = NULL;
+EXPORT_SYMBOL_GPL(timer_unstable_counter_workaround);
+
+DEFINE_STATIC_KEY_FALSE(arch_timer_read_ool_enabled);
+EXPORT_SYMBOL_GPL(arch_timer_read_ool_enabled);
+
+static const struct arch_timer_erratum_workaround ool_workarounds[] = {
+#ifdef CONFIG_FSL_ERRATUM_A008585
+	{
+		.id = "fsl,erratum-a008585",
+		.read_cntp_tval_el0 = fsl_a008585_read_cntp_tval_el0,
+		.read_cntv_tval_el0 = fsl_a008585_read_cntv_tval_el0,
+		.read_cntvct_el0 = fsl_a008585_read_cntvct_el0,
+	},
+#endif
+#ifdef CONFIG_HISILICON_ERRATUM_161010101
+	{
+		.id = "hisilicon,erratum-161010101",
+		.read_cntp_tval_el0 = hisi_161010101_read_cntp_tval_el0,
+		.read_cntv_tval_el0 = hisi_161010101_read_cntv_tval_el0,
+		.read_cntvct_el0 = hisi_161010101_read_cntvct_el0,
+	},
+#endif
+};
+#endif /* CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND */
 
 static __always_inline
 void arch_timer_reg_write(int access, enum arch_timer_reg reg, u32 val,
@@ -240,6 +348,40 @@ static __always_inline void set_next_event(const int access, unsigned long evt,
 	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
 }
 
+#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
+static __always_inline void erratum_set_next_event_generic(const int access,
+		unsigned long evt, struct clock_event_device *clk)
+{
+	unsigned long ctrl;
+	u64 cval = evt + arch_counter_get_cntvct();
+
+	ctrl = arch_timer_reg_read(access, ARCH_TIMER_REG_CTRL, clk);
+	ctrl |= ARCH_TIMER_CTRL_ENABLE;
+	ctrl &= ~ARCH_TIMER_CTRL_IT_MASK;
+
+	if (access == ARCH_TIMER_PHYS_ACCESS)
+		write_sysreg(cval, cntp_cval_el0);
+	else if (access == ARCH_TIMER_VIRT_ACCESS)
+		write_sysreg(cval, cntv_cval_el0);
+
+	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
+}
+
+static int erratum_set_next_event_virt(unsigned long evt,
+					   struct clock_event_device *clk)
+{
+	erratum_set_next_event_generic(ARCH_TIMER_VIRT_ACCESS, evt, clk);
+	return 0;
+}
+
+static int erratum_set_next_event_phys(unsigned long evt,
+					   struct clock_event_device *clk)
+{
+	erratum_set_next_event_generic(ARCH_TIMER_PHYS_ACCESS, evt, clk);
+	return 0;
+}
+#endif /* CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND */
+
 static int arch_timer_set_next_event_virt(unsigned long evt,
 					  struct clock_event_device *clk)
 {
@@ -266,6 +408,19 @@ static int arch_timer_set_next_event_phys_mem(unsigned long evt,
 {
 	set_next_event(ARCH_TIMER_MEM_PHYS_ACCESS, evt, clk);
 	return 0;
+}
+
+static void erratum_workaround_set_sne(struct clock_event_device *clk)
+{
+#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
+	if (!static_branch_unlikely(&arch_timer_read_ool_enabled))
+		return;
+
+	if (arch_timer_uses_ppi == VIRT_PPI)
+		clk->set_next_event = erratum_set_next_event_virt;
+	else
+		clk->set_next_event = erratum_set_next_event_phys;
+#endif
 }
 
 static void __arch_timer_setup(unsigned type,
@@ -296,6 +451,8 @@ static void __arch_timer_setup(unsigned type,
 		default:
 			BUG();
 		}
+
+		erratum_workaround_set_sne(clk);
 	} else {
 		clk->features |= CLOCK_EVT_FEAT_DYNIRQ;
 		clk->name = "arch_mem_timer";
@@ -370,14 +527,33 @@ static bool arch_timer_has_nonsecure_ppi(void)
 		arch_timer_ppi[PHYS_NONSECURE_PPI]);
 }
 
-static int arch_timer_setup(struct clock_event_device *clk)
+static u32 check_ppi_trigger(int irq)
 {
+	u32 flags = irq_get_trigger_type(irq);
+
+	if (flags != IRQF_TRIGGER_HIGH && flags != IRQF_TRIGGER_LOW) {
+		pr_warn("WARNING: Invalid trigger for IRQ%d, assuming level low\n", irq);
+		pr_warn("WARNING: Please fix your firmware\n");
+		flags = IRQF_TRIGGER_LOW;
+	}
+
+	return flags;
+}
+
+static int arch_timer_starting_cpu(unsigned int cpu)
+{
+	struct clock_event_device *clk = this_cpu_ptr(arch_timer_evt);
+	u32 flags;
+
 	__arch_timer_setup(ARCH_CP15_TIMER, clk);
 
-	enable_percpu_irq(arch_timer_ppi[arch_timer_uses_ppi], 0);
+	flags = check_ppi_trigger(arch_timer_ppi[arch_timer_uses_ppi]);
+	enable_percpu_irq(arch_timer_ppi[arch_timer_uses_ppi], flags);
 
-	if (arch_timer_has_nonsecure_ppi())
-		enable_percpu_irq(arch_timer_ppi[PHYS_NONSECURE_PPI], 0);
+	if (arch_timer_has_nonsecure_ppi()) {
+		flags = check_ppi_trigger(arch_timer_ppi[PHYS_NONSECURE_PPI]);
+		enable_percpu_irq(arch_timer_ppi[PHYS_NONSECURE_PPI], flags);
+	}
 
 	arch_counter_set_user_access();
 	if (evtstrm_enable)
@@ -453,12 +629,12 @@ static u64 arch_counter_get_cntvct_mem(void)
  */
 u64 (*arch_timer_read_counter)(void) = arch_counter_get_cntvct;
 
-static cycle_t arch_counter_read(struct clocksource *cs)
+static u64 arch_counter_read(struct clocksource *cs)
 {
 	return arch_timer_read_counter();
 }
 
-static cycle_t arch_counter_read_cc(const struct cyclecounter *cc)
+static u64 arch_counter_read_cc(const struct cyclecounter *cc)
 {
 	return arch_timer_read_counter();
 }
@@ -468,10 +644,10 @@ static struct clocksource clocksource_counter = {
 	.rating	= 400,
 	.read	= arch_counter_read,
 	.mask	= CLOCKSOURCE_MASK(56),
-	.flags	= CLOCK_SOURCE_IS_CONTINUOUS | CLOCK_SOURCE_SUSPEND_NONSTOP,
+	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
-static struct cyclecounter cyclecounter = {
+static struct cyclecounter cyclecounter __ro_after_init = {
 	.read	= arch_counter_read_cc,
 	.mask	= CLOCKSOURCE_MASK(56),
 };
@@ -493,17 +669,23 @@ static void __init arch_counter_register(unsigned type)
 			arch_timer_read_counter = arch_counter_get_cntvct;
 		else
 			arch_timer_read_counter = arch_counter_get_cntpct;
+
+		clocksource_counter.archdata.vdso_direct = true;
+
+#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
+		/*
+		 * Don't use the vdso fastpath if errata require using
+		 * the out-of-line counter accessor.
+		 */
+		if (static_branch_unlikely(&arch_timer_read_ool_enabled))
+			clocksource_counter.archdata.vdso_direct = false;
+#endif
 	} else {
 		arch_timer_read_counter = arch_counter_get_cntvct_mem;
-
-		/* If the clocksource name is "arch_sys_counter" the
-		 * VDSO will attempt to read the CP15-based counter.
-		 * Ensure this does not happen when CP15-based
-		 * counter is not available.
-		 */
-		clocksource_counter.name = "arch_mem_counter";
 	}
 
+	if (!arch_counter_suspend_stop)
+		clocksource_counter.flags |= CLOCK_SOURCE_SUSPEND_NONSTOP;
 	start_count = arch_timer_read_counter();
 	clocksource_register_hz(&clocksource_counter, arch_timer_rate);
 	cyclecounter.mult = clocksource_counter.mult;
@@ -527,28 +709,13 @@ static void arch_timer_stop(struct clock_event_device *clk)
 	clk->set_state_shutdown(clk);
 }
 
-static int arch_timer_cpu_notify(struct notifier_block *self,
-					   unsigned long action, void *hcpu)
+static int arch_timer_dying_cpu(unsigned int cpu)
 {
-	/*
-	 * Grab cpu pointer in each case to avoid spurious
-	 * preemptible warnings
-	 */
-	switch (action & ~CPU_TASKS_FROZEN) {
-	case CPU_STARTING:
-		arch_timer_setup(this_cpu_ptr(arch_timer_evt));
-		break;
-	case CPU_DYING:
-		arch_timer_stop(this_cpu_ptr(arch_timer_evt));
-		break;
-	}
+	struct clock_event_device *clk = this_cpu_ptr(arch_timer_evt);
 
-	return NOTIFY_OK;
+	arch_timer_stop(clk);
+	return 0;
 }
-
-static struct notifier_block arch_timer_cpu_nb = {
-	.notifier_call = arch_timer_cpu_notify,
-};
 
 #ifdef CONFIG_CPU_PM
 static unsigned int saved_cntkctl;
@@ -570,10 +737,20 @@ static int __init arch_timer_cpu_pm_init(void)
 {
 	return cpu_pm_register_notifier(&arch_timer_cpu_pm_notifier);
 }
+
+static void __init arch_timer_cpu_pm_deinit(void)
+{
+	WARN_ON(cpu_pm_unregister_notifier(&arch_timer_cpu_pm_notifier));
+}
+
 #else
 static int __init arch_timer_cpu_pm_init(void)
 {
 	return 0;
+}
+
+static void __init arch_timer_cpu_pm_deinit(void)
+{
 }
 #endif
 
@@ -621,22 +798,23 @@ static int __init arch_timer_register(void)
 		goto out_free;
 	}
 
-	err = register_cpu_notifier(&arch_timer_cpu_nb);
-	if (err)
-		goto out_free_irq;
-
 	err = arch_timer_cpu_pm_init();
 	if (err)
 		goto out_unreg_notify;
 
-	/* Immediately configure the timer on the boot CPU */
-	arch_timer_setup(this_cpu_ptr(arch_timer_evt));
 
+	/* Register and immediately configure the timer on the boot CPU */
+	err = cpuhp_setup_state(CPUHP_AP_ARM_ARCH_TIMER_STARTING,
+				"clockevents/arm/arch_timer:starting",
+				arch_timer_starting_cpu, arch_timer_dying_cpu);
+	if (err)
+		goto out_unreg_cpupm;
 	return 0;
 
+out_unreg_cpupm:
+	arch_timer_cpu_pm_deinit();
+
 out_unreg_notify:
-	unregister_cpu_notifier(&arch_timer_cpu_nb);
-out_free_irq:
 	free_percpu_irq(arch_timer_ppi[arch_timer_uses_ppi], arch_timer_evt);
 	if (arch_timer_has_nonsecure_ppi())
 		free_percpu_irq(arch_timer_ppi[PHYS_NONSECURE_PPI],
@@ -782,6 +960,18 @@ static int __init arch_timer_of_init(struct device_node *np)
 
 	arch_timer_c3stop = !of_property_read_bool(np, "always-on");
 
+#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
+	for (i = 0; i < ARRAY_SIZE(ool_workarounds); i++) {
+		if (of_property_read_bool(np, ool_workarounds[i].id)) {
+			timer_unstable_counter_workaround = &ool_workarounds[i];
+			static_branch_enable(&arch_timer_read_ool_enabled);
+			pr_info("arch_timer: Enabling workaround for %s\n",
+				timer_unstable_counter_workaround->id);
+			break;
+		}
+	}
+#endif
+
 	/*
 	 * If we cannot rely on firmware initializing the timer registers then
 	 * we should use the physical timers instead.
@@ -789,6 +979,10 @@ static int __init arch_timer_of_init(struct device_node *np)
 	if (IS_ENABLED(CONFIG_ARM) &&
 	    of_property_read_bool(np, "arm,cpu-registers-not-fw-configured"))
 		arch_timer_uses_ppi = PHYS_SECURE_PPI;
+
+	/* On some systems, the counter stops ticking when in suspend. */
+	arch_counter_suspend_stop = of_property_read_bool(np,
+							 "arm,no-tick-in-suspend");
 
 	return arch_timer_init();
 }
@@ -847,8 +1041,9 @@ static int __init arch_timer_mem_init(struct device_node *np)
 	}
 
 	ret= -ENXIO;
-	base = arch_counter_base = of_iomap(best_frame, 0);
-	if (!base) {
+	base = arch_counter_base = of_io_request_and_map(best_frame, 0,
+							 "arch_mem_timer");
+	if (IS_ERR(base)) {
 		pr_err("arch_timer: Can't map frame's registers\n");
 		goto out;
 	}

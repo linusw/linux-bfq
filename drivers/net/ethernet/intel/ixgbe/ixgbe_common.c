@@ -99,6 +99,9 @@ bool ixgbe_device_supports_autoneg_fc(struct ixgbe_hw *hw)
 		case IXGBE_DEV_ID_X550T:
 		case IXGBE_DEV_ID_X550T1:
 		case IXGBE_DEV_ID_X550EM_X_10G_T:
+		case IXGBE_DEV_ID_X550EM_A_10G_T:
+		case IXGBE_DEV_ID_X550EM_A_1G_T:
+		case IXGBE_DEV_ID_X550EM_A_1G_T_L:
 			supported = true;
 			break;
 		default:
@@ -277,6 +280,7 @@ s32 ixgbe_start_hw_generic(struct ixgbe_hw *hw)
 {
 	s32 ret_val;
 	u32 ctrl_ext;
+	u16 device_caps;
 
 	/* Set the media type */
 	hw->phy.media_type = hw->mac.ops.get_media_type(hw);
@@ -296,10 +300,28 @@ s32 ixgbe_start_hw_generic(struct ixgbe_hw *hw)
 	IXGBE_WRITE_REG(hw, IXGBE_CTRL_EXT, ctrl_ext);
 	IXGBE_WRITE_FLUSH(hw);
 
-	/* Setup flow control */
-	ret_val = hw->mac.ops.setup_fc(hw);
-	if (ret_val)
-		return ret_val;
+	/* Setup flow control if method for doing so */
+	if (hw->mac.ops.setup_fc) {
+		ret_val = hw->mac.ops.setup_fc(hw);
+		if (ret_val)
+			return ret_val;
+	}
+
+	/* Cashe bit indicating need for crosstalk fix */
+	switch (hw->mac.type) {
+	case ixgbe_mac_82599EB:
+	case ixgbe_mac_X550EM_x:
+	case ixgbe_mac_x550em_a:
+		hw->mac.ops.get_device_caps(hw, &device_caps);
+		if (device_caps & IXGBE_DEVICE_CAPS_NO_CROSSTALK_WR)
+			hw->need_crosstalk_fix = false;
+		else
+			hw->need_crosstalk_fix = true;
+		break;
+	default:
+		hw->need_crosstalk_fix = false;
+		break;
+	}
 
 	/* Clear adapter stopped flag */
 	hw->adapter_stopped = false;
@@ -328,7 +350,7 @@ s32 ixgbe_start_hw_gen2(struct ixgbe_hw *hw)
 	}
 	IXGBE_WRITE_FLUSH(hw);
 
-#ifndef CONFIG_SPARC
+#ifndef CONFIG_ARCH_WANT_RELAX_ORDER
 	/* Disable relaxed ordering */
 	for (i = 0; i < hw->mac.max_tx_queues; i++) {
 		u32 regval;
@@ -371,6 +393,9 @@ s32 ixgbe_init_hw_generic(struct ixgbe_hw *hw)
 		/* Start the HW */
 		status = hw->mac.ops.start_hw(hw);
 	}
+
+	/* Initialize the LED link active for LED blink support */
+	hw->mac.ops.init_led_link_act(hw);
 
 	return status;
 }
@@ -755,6 +780,49 @@ s32 ixgbe_stop_adapter_generic(struct ixgbe_hw *hw)
 }
 
 /**
+ *  ixgbe_init_led_link_act_generic - Store the LED index link/activity.
+ *  @hw: pointer to hardware structure
+ *
+ *  Store the index for the link active LED. This will be used to support
+ *  blinking the LED.
+ **/
+s32 ixgbe_init_led_link_act_generic(struct ixgbe_hw *hw)
+{
+	struct ixgbe_mac_info *mac = &hw->mac;
+	u32 led_reg, led_mode;
+	u16 i;
+
+	led_reg = IXGBE_READ_REG(hw, IXGBE_LEDCTL);
+
+	/* Get LED link active from the LEDCTL register */
+	for (i = 0; i < 4; i++) {
+		led_mode = led_reg >> IXGBE_LED_MODE_SHIFT(i);
+
+		if ((led_mode & IXGBE_LED_MODE_MASK_BASE) ==
+		    IXGBE_LED_LINK_ACTIVE) {
+			mac->led_link_act = i;
+			return 0;
+		}
+	}
+
+	/* If LEDCTL register does not have the LED link active set, then use
+	 * known MAC defaults.
+	 */
+	switch (hw->mac.type) {
+	case ixgbe_mac_x550em_a:
+		mac->led_link_act = 0;
+		break;
+	case ixgbe_mac_X550EM_x:
+		mac->led_link_act = 1;
+		break;
+	default:
+		mac->led_link_act = 2;
+	}
+
+	return 0;
+}
+
+/**
  *  ixgbe_led_on_generic - Turns on the software controllable LEDs.
  *  @hw: pointer to hardware structure
  *  @index: led number to turn on
@@ -762,6 +830,9 @@ s32 ixgbe_stop_adapter_generic(struct ixgbe_hw *hw)
 s32 ixgbe_led_on_generic(struct ixgbe_hw *hw, u32 index)
 {
 	u32 led_reg = IXGBE_READ_REG(hw, IXGBE_LEDCTL);
+
+	if (index > 3)
+		return IXGBE_ERR_PARAM;
 
 	/* To turn on the LED, set mode to ON. */
 	led_reg &= ~IXGBE_LED_MODE_MASK(index);
@@ -780,6 +851,9 @@ s32 ixgbe_led_on_generic(struct ixgbe_hw *hw, u32 index)
 s32 ixgbe_led_off_generic(struct ixgbe_hw *hw, u32 index)
 {
 	u32 led_reg = IXGBE_READ_REG(hw, IXGBE_LEDCTL);
+
+	if (index > 3)
+		return IXGBE_ERR_PARAM;
 
 	/* To turn off the LED, set mode to OFF. */
 	led_reg &= ~IXGBE_LED_MODE_MASK(index);
@@ -2103,7 +2177,7 @@ s32 ixgbe_fc_enable_generic(struct ixgbe_hw *hw)
 	}
 
 	/* Negotiate the fc mode to use */
-	ixgbe_fc_autoneg(hw);
+	hw->mac.ops.fc_autoneg(hw);
 
 	/* Disable any previous flow control settings */
 	mflcn_reg = IXGBE_READ_REG(hw, IXGBE_MFLCN);
@@ -2207,8 +2281,8 @@ s32 ixgbe_fc_enable_generic(struct ixgbe_hw *hw)
  *  Find the intersection between advertised settings and link partner's
  *  advertised settings
  **/
-static s32 ixgbe_negotiate_fc(struct ixgbe_hw *hw, u32 adv_reg, u32 lp_reg,
-			      u32 adv_sym, u32 adv_asm, u32 lp_sym, u32 lp_asm)
+s32 ixgbe_negotiate_fc(struct ixgbe_hw *hw, u32 adv_reg, u32 lp_reg,
+		       u32 adv_sym, u32 adv_asm, u32 lp_sym, u32 lp_asm)
 {
 	if ((!(adv_reg)) ||  (!(lp_reg)))
 		return IXGBE_ERR_FC_NOT_NEGOTIATED;
@@ -2657,7 +2731,7 @@ s32 ixgbe_disable_rx_buff_generic(struct ixgbe_hw *hw)
  **/
 s32 ixgbe_enable_rx_buff_generic(struct ixgbe_hw *hw)
 {
-	int secrxreg;
+	u32 secrxreg;
 
 	secrxreg = IXGBE_READ_REG(hw, IXGBE_SECRXCTRL);
 	secrxreg &= ~IXGBE_SECRXCTRL_RX_DIS;
@@ -2697,6 +2771,9 @@ s32 ixgbe_blink_led_start_generic(struct ixgbe_hw *hw, u32 index)
 	u32 led_reg = IXGBE_READ_REG(hw, IXGBE_LEDCTL);
 	bool locked = false;
 	s32 ret_val;
+
+	if (index > 3)
+		return IXGBE_ERR_PARAM;
 
 	/*
 	 * Link must be up to auto-blink the LEDs;
@@ -2740,6 +2817,9 @@ s32 ixgbe_blink_led_stop_generic(struct ixgbe_hw *hw, u32 index)
 	u32 led_reg = IXGBE_READ_REG(hw, IXGBE_LEDCTL);
 	bool locked = false;
 	s32 ret_val;
+
+	if (index > 3)
+		return IXGBE_ERR_PARAM;
 
 	ret_val = hw->mac.ops.prot_autoc_read(hw, &locked, &autoc_reg);
 	if (ret_val)
@@ -2929,8 +3009,10 @@ s32 ixgbe_clear_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq)
 	}
 
 	/* was that the last pool using this rar? */
-	if (mpsar_lo == 0 && mpsar_hi == 0 && rar != 0)
+	if (mpsar_lo == 0 && mpsar_hi == 0 &&
+	    rar != 0 && rar != hw->mac.san_mac_rar_index)
 		hw->mac.ops.clear_rar(hw, rar);
+
 	return 0;
 }
 
@@ -3188,6 +3270,31 @@ s32 ixgbe_clear_vfta_generic(struct ixgbe_hw *hw)
 }
 
 /**
+ *  ixgbe_need_crosstalk_fix - Determine if we need to do cross talk fix
+ *  @hw: pointer to hardware structure
+ *
+ *  Contains the logic to identify if we need to verify link for the
+ *  crosstalk fix
+ **/
+static bool ixgbe_need_crosstalk_fix(struct ixgbe_hw *hw)
+{
+	/* Does FW say we need the fix */
+	if (!hw->need_crosstalk_fix)
+		return false;
+
+	/* Only consider SFP+ PHYs i.e. media type fiber */
+	switch (hw->mac.ops.get_media_type(hw)) {
+	case ixgbe_media_type_fiber:
+	case ixgbe_media_type_fiber_qsfp:
+		break;
+	default:
+		return false;
+	}
+
+	return true;
+}
+
+/**
  *  ixgbe_check_mac_link_generic - Determine link and speed status
  *  @hw: pointer to hardware structure
  *  @speed: pointer to link speed
@@ -3201,6 +3308,35 @@ s32 ixgbe_check_mac_link_generic(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 {
 	u32 links_reg, links_orig;
 	u32 i;
+
+	/* If Crosstalk fix enabled do the sanity check of making sure
+	 * the SFP+ cage is full.
+	 */
+	if (ixgbe_need_crosstalk_fix(hw)) {
+		u32 sfp_cage_full;
+
+		switch (hw->mac.type) {
+		case ixgbe_mac_82599EB:
+			sfp_cage_full = IXGBE_READ_REG(hw, IXGBE_ESDP) &
+					IXGBE_ESDP_SDP2;
+			break;
+		case ixgbe_mac_X550EM_x:
+		case ixgbe_mac_x550em_a:
+			sfp_cage_full = IXGBE_READ_REG(hw, IXGBE_ESDP) &
+					IXGBE_ESDP_SDP0;
+			break;
+		default:
+			/* sanity check - No SFP+ devices here */
+			sfp_cage_full = false;
+			break;
+		}
+
+		if (!sfp_cage_full) {
+			*link_up = false;
+			*speed = IXGBE_LINK_SPEED_UNKNOWN;
+			return 0;
+		}
+	}
 
 	/* clear the old state */
 	links_orig = IXGBE_READ_REG(hw, IXGBE_LINKS);
@@ -3247,6 +3383,13 @@ s32 ixgbe_check_mac_link_generic(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 			*speed = IXGBE_LINK_SPEED_5GB_FULL;
 		else
 			*speed = IXGBE_LINK_SPEED_100_FULL;
+		break;
+	case IXGBE_LINKS_SPEED_10_X550EM_A:
+		*speed = IXGBE_LINK_SPEED_UNKNOWN;
+		if (hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T ||
+		    hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T_L) {
+			*speed = IXGBE_LINK_SPEED_10_FULL;
+		}
 		break;
 	default:
 		*speed = IXGBE_LINK_SPEED_UNKNOWN;
@@ -3444,7 +3587,7 @@ void ixgbe_set_rxpba_generic(struct ixgbe_hw *hw,
  *  Calculates the checksum for some buffer on a specified length.  The
  *  checksum calculated is returned.
  **/
-static u8 ixgbe_calculate_checksum(u8 *buffer, u32 length)
+u8 ixgbe_calculate_checksum(u8 *buffer, u32 length)
 {
 	u32 i;
 	u8 sum = 0;
@@ -3456,6 +3599,75 @@ static u8 ixgbe_calculate_checksum(u8 *buffer, u32 length)
 		sum += buffer[i];
 
 	return (u8) (0 - sum);
+}
+
+/**
+ *  ixgbe_hic_unlocked - Issue command to manageability block unlocked
+ *  @hw: pointer to the HW structure
+ *  @buffer: command to write and where the return status will be placed
+ *  @length: length of buffer, must be multiple of 4 bytes
+ *  @timeout: time in ms to wait for command completion
+ *
+ *  Communicates with the manageability block. On success return 0
+ *  else returns semaphore error when encountering an error acquiring
+ *  semaphore or IXGBE_ERR_HOST_INTERFACE_COMMAND when command fails.
+ *
+ *  This function assumes that the IXGBE_GSSR_SW_MNG_SM semaphore is held
+ *  by the caller.
+ **/
+s32 ixgbe_hic_unlocked(struct ixgbe_hw *hw, u32 *buffer, u32 length,
+		       u32 timeout)
+{
+	u32 hicr, i, fwsts;
+	u16 dword_len;
+
+	if (!length || length > IXGBE_HI_MAX_BLOCK_BYTE_LENGTH) {
+		hw_dbg(hw, "Buffer length failure buffersize-%d.\n", length);
+		return IXGBE_ERR_HOST_INTERFACE_COMMAND;
+	}
+
+	/* Set bit 9 of FWSTS clearing FW reset indication */
+	fwsts = IXGBE_READ_REG(hw, IXGBE_FWSTS);
+	IXGBE_WRITE_REG(hw, IXGBE_FWSTS, fwsts | IXGBE_FWSTS_FWRI);
+
+	/* Check that the host interface is enabled. */
+	hicr = IXGBE_READ_REG(hw, IXGBE_HICR);
+	if (!(hicr & IXGBE_HICR_EN)) {
+		hw_dbg(hw, "IXGBE_HOST_EN bit disabled.\n");
+		return IXGBE_ERR_HOST_INTERFACE_COMMAND;
+	}
+
+	/* Calculate length in DWORDs. We must be DWORD aligned */
+	if (length % sizeof(u32)) {
+		hw_dbg(hw, "Buffer length failure, not aligned to dword");
+		return IXGBE_ERR_INVALID_ARGUMENT;
+	}
+
+	dword_len = length >> 2;
+
+	/* The device driver writes the relevant command block
+	 * into the ram area.
+	 */
+	for (i = 0; i < dword_len; i++)
+		IXGBE_WRITE_REG_ARRAY(hw, IXGBE_FLEX_MNG,
+				      i, cpu_to_le32(buffer[i]));
+
+	/* Setting this bit tells the ARC that a new command is pending. */
+	IXGBE_WRITE_REG(hw, IXGBE_HICR, hicr | IXGBE_HICR_C);
+
+	for (i = 0; i < timeout; i++) {
+		hicr = IXGBE_READ_REG(hw, IXGBE_HICR);
+		if (!(hicr & IXGBE_HICR_C))
+			break;
+		usleep_range(1000, 2000);
+	}
+
+	/* Check command successful completion. */
+	if ((timeout && i == timeout) ||
+	    !(IXGBE_READ_REG(hw, IXGBE_HICR) & IXGBE_HICR_SV))
+		return IXGBE_ERR_HOST_INTERFACE_COMMAND;
+
+	return 0;
 }
 
 /**
@@ -3480,13 +3692,13 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, void *buffer,
 				 bool return_data)
 {
 	u32 hdr_size = sizeof(struct ixgbe_hic_hdr);
-	u32 hicr, i, bi, fwsts;
-	u16 buf_len, dword_len;
 	union {
 		struct ixgbe_hic_hdr hdr;
 		u32 u32arr[1];
 	} *bp = buffer;
+	u16 buf_len, dword_len;
 	s32 status;
+	u32 bi;
 
 	if (!length || length > IXGBE_HI_MAX_BLOCK_BYTE_LENGTH) {
 		hw_dbg(hw, "Buffer length failure buffersize-%d.\n", length);
@@ -3497,51 +3709,9 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, void *buffer,
 	if (status)
 		return status;
 
-	/* Set bit 9 of FWSTS clearing FW reset indication */
-	fwsts = IXGBE_READ_REG(hw, IXGBE_FWSTS);
-	IXGBE_WRITE_REG(hw, IXGBE_FWSTS, fwsts | IXGBE_FWSTS_FWRI);
-
-	/* Check that the host interface is enabled. */
-	hicr = IXGBE_READ_REG(hw, IXGBE_HICR);
-	if (!(hicr & IXGBE_HICR_EN)) {
-		hw_dbg(hw, "IXGBE_HOST_EN bit disabled.\n");
-		status = IXGBE_ERR_HOST_INTERFACE_COMMAND;
+	status = ixgbe_hic_unlocked(hw, buffer, length, timeout);
+	if (status)
 		goto rel_out;
-	}
-
-	/* Calculate length in DWORDs. We must be DWORD aligned */
-	if (length % sizeof(u32)) {
-		hw_dbg(hw, "Buffer length failure, not aligned to dword");
-		status = IXGBE_ERR_INVALID_ARGUMENT;
-		goto rel_out;
-	}
-
-	dword_len = length >> 2;
-
-	/* The device driver writes the relevant command block
-	 * into the ram area.
-	 */
-	for (i = 0; i < dword_len; i++)
-		IXGBE_WRITE_REG_ARRAY(hw, IXGBE_FLEX_MNG,
-				      i, cpu_to_le32(bp->u32arr[i]));
-
-	/* Setting this bit tells the ARC that a new command is pending. */
-	IXGBE_WRITE_REG(hw, IXGBE_HICR, hicr | IXGBE_HICR_C);
-
-	for (i = 0; i < timeout; i++) {
-		hicr = IXGBE_READ_REG(hw, IXGBE_HICR);
-		if (!(hicr & IXGBE_HICR_C))
-			break;
-		usleep_range(1000, 2000);
-	}
-
-	/* Check command successful completion. */
-	if ((timeout && i == timeout) ||
-	    !(IXGBE_READ_REG(hw, IXGBE_HICR) & IXGBE_HICR_SV)) {
-		hw_dbg(hw, "Command has failed with no status valid.\n");
-		status = IXGBE_ERR_HOST_INTERFACE_COMMAND;
-		goto rel_out;
-	}
 
 	if (!return_data)
 		goto rel_out;
@@ -3588,6 +3758,8 @@ rel_out:
  *  @min: driver version minor number
  *  @build: driver version build number
  *  @sub: driver version sub build number
+ *  @len: length of driver_ver string
+ *  @driver_ver: driver string
  *
  *  Sends driver version number to firmware through the manageability
  *  block.  On success return 0
@@ -3595,7 +3767,8 @@ rel_out:
  *  semaphore or IXGBE_ERR_HOST_INTERFACE_COMMAND when command fails.
  **/
 s32 ixgbe_set_fw_drv_ver_generic(struct ixgbe_hw *hw, u8 maj, u8 min,
-				 u8 build, u8 sub)
+				 u8 build, u8 sub, __always_unused u16 len,
+				 __always_unused const char *driver_ver)
 {
 	struct ixgbe_hic_drv_info fw_cmd;
 	int i;

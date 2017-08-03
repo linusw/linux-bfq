@@ -31,7 +31,7 @@
 
 #include <asm/byteorder.h>
 #include <asm/irq.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/div64.h>
 
@@ -184,9 +184,9 @@ static ide_startstop_t ide_do_rw_disk(ide_drive_t *drive, struct request *rq,
 	ide_hwif_t *hwif = drive->hwif;
 
 	BUG_ON(drive->dev_flags & IDE_DFLAG_BLOCKED);
-	BUG_ON(rq->cmd_type != REQ_TYPE_FS);
+	BUG_ON(blk_rq_is_passthrough(rq));
 
-	ledtrig_ide_activity();
+	ledtrig_disk_activity();
 
 	pr_debug("%s: %sing: block=%llu, sectors=%u\n",
 		 drive->name, rq_data_dir(rq) == READ ? "read" : "writ",
@@ -431,7 +431,7 @@ static int idedisk_prep_fn(struct request_queue *q, struct request *rq)
 	ide_drive_t *drive = q->queuedata;
 	struct ide_cmd *cmd;
 
-	if (!(rq->cmd_flags & REQ_FLUSH))
+	if (req_op(rq) != REQ_OP_FLUSH)
 		return BLKPREP_OK;
 
 	if (rq->special) {
@@ -452,8 +452,9 @@ static int idedisk_prep_fn(struct request_queue *q, struct request *rq)
 	cmd->valid.out.tf = IDE_VALID_OUT_TF | IDE_VALID_DEVICE;
 	cmd->tf_flags = IDE_TFLAG_DYN;
 	cmd->protocol = ATA_PROT_NODATA;
-
-	rq->cmd_type = REQ_TYPE_ATA_TASKFILE;
+	rq->cmd_flags &= ~REQ_OP_MASK;
+	rq->cmd_flags |= REQ_OP_DRV_OUT;
+	ide_req(rq)->type = ATA_PRIV_TASKFILE;
 	rq->special = cmd;
 	cmd->rq = rq;
 
@@ -477,8 +478,9 @@ static int set_multcount(ide_drive_t *drive, int arg)
 	if (drive->special_flags & IDE_SFLAG_SET_MULTMODE)
 		return -EBUSY;
 
-	rq = blk_get_request(drive->queue, READ, __GFP_RECLAIM);
-	rq->cmd_type = REQ_TYPE_ATA_TASKFILE;
+	rq = blk_get_request(drive->queue, REQ_OP_DRV_IN, __GFP_RECLAIM);
+	scsi_req_init(rq);
+	ide_req(rq)->type = ATA_PRIV_TASKFILE;
 
 	drive->mult_req = arg;
 	drive->special_flags |= IDE_SFLAG_SET_MULTMODE;

@@ -15,11 +15,6 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
- *  02111-1307  USA
  */
 
 #ifndef CX18_DRIVER_H
@@ -29,7 +24,7 @@
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/fs.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
@@ -492,9 +487,9 @@ struct cx18_card;
  *  (1/15.625 kHz) * 2 * 13.5 MHz = 1728 samples/line =
  *  4 bytes SAV + 280 bytes anc data + 4 bytes SAV + 1440 active samples
  */
-static const u32 vbi_active_samples = 1444; /* 4 byte SAV + 720 Y + 720 U/V */
-static const u32 vbi_hblank_samples_60Hz = 272; /* 4 byte EAV + 268 anc/fill */
-static const u32 vbi_hblank_samples_50Hz = 284; /* 4 byte EAV + 280 anc/fill */
+#define VBI_ACTIVE_SAMPLES	1444 /* 4 byte SAV + 720 Y + 720 U/V */
+#define VBI_HBLANK_SAMPLES_60HZ	272 /* 4 byte EAV + 268 anc/fill */
+#define VBI_HBLANK_SAMPLES_50HZ	284 /* 4 byte EAV + 280 anc/fill */
 
 #define CX18_VBI_FRAMES 32
 

@@ -24,10 +24,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -51,6 +47,7 @@
 #define OV534_OP_READ_2		0xf9
 
 #define CTRL_TIMEOUT 500
+#define DEFAULT_FRAME_RATE 30
 
 MODULE_AUTHOR("Antonio Ospite <ospite@studenti.unina.it>");
 MODULE_DESCRIPTION("GSPCA/OV534 USB Camera Driver");
@@ -1061,7 +1058,7 @@ static int sd_config(struct gspca_dev *gspca_dev,
 	cam->cam_mode = ov772x_mode;
 	cam->nmodes = ARRAY_SIZE(ov772x_mode);
 
-	sd->frame_rate = 30;
+	sd->frame_rate = DEFAULT_FRAME_RATE;
 
 	return 0;
 }
@@ -1492,10 +1489,8 @@ static void sd_set_streamparm(struct gspca_dev *gspca_dev,
 	struct sd *sd = (struct sd *) gspca_dev;
 
 	if (tpf->numerator == 0 || tpf->denominator == 0)
-		/* Set default framerate */
-		sd->frame_rate = 30;
+		sd->frame_rate = DEFAULT_FRAME_RATE;
 	else
-		/* Set requested framerate */
 		sd->frame_rate = tpf->denominator / tpf->numerator;
 
 	if (gspca_dev->streaming)

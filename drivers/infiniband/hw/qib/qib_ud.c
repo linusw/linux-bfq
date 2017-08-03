@@ -152,7 +152,7 @@ static void qib_ud_loopback(struct rvt_qp *sqp, struct rvt_swqe *swqe)
 
 		ret = qib_get_rwqe(qp, 0);
 		if (ret < 0) {
-			qib_rc_error(qp, IB_WC_LOC_QP_OP_ERR);
+			rvt_rc_error(qp, IB_WC_LOC_QP_OP_ERR);
 			goto bail_unlock;
 		}
 		if (!ret) {
@@ -169,11 +169,15 @@ static void qib_ud_loopback(struct rvt_qp *sqp, struct rvt_swqe *swqe)
 	}
 
 	if (ah_attr->ah_flags & IB_AH_GRH) {
-		qib_copy_sge(&qp->r_sge, &ah_attr->grh,
-			     sizeof(struct ib_grh), 1);
+		struct ib_grh grh;
+		struct ib_global_route grd = ah_attr->grh;
+
+		qib_make_grh(ibp, &grh, &grd, 0, 0);
+		qib_copy_sge(&qp->r_sge, &grh,
+			     sizeof(grh), 1);
 		wc.wc_flags |= IB_WC_GRH;
 	} else
-		qib_skip_sge(&qp->r_sge, sizeof(struct ib_grh), 1);
+		rvt_skip_sge(&qp->r_sge, sizeof(struct ib_grh), true);
 	ssge.sg_list = swqe->sg_list + 1;
 	ssge.sge = *swqe->sg_list;
 	ssge.num_sge = swqe->wr.num_sge;
@@ -241,7 +245,7 @@ drop:
 int qib_make_ud_req(struct rvt_qp *qp, unsigned long *flags)
 {
 	struct qib_qp_priv *priv = qp->priv;
-	struct qib_other_headers *ohdr;
+	struct ib_other_headers *ohdr;
 	struct ib_ah_attr *ah_attr;
 	struct qib_pportdata *ppd;
 	struct qib_ibport *ibp;
@@ -431,10 +435,10 @@ static unsigned qib_lookup_pkey(struct qib_ibport *ibp, u16 pkey)
  * for the given QP.
  * Called at interrupt level.
  */
-void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
+void qib_ud_rcv(struct qib_ibport *ibp, struct ib_header *hdr,
 		int has_grh, void *data, u32 tlen, struct rvt_qp *qp)
 {
-	struct qib_other_headers *ohdr;
+	struct ib_other_headers *ohdr;
 	int opcode;
 	u32 hdrsize;
 	u32 pad;
@@ -544,7 +548,7 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 
 		ret = qib_get_rwqe(qp, 0);
 		if (ret < 0) {
-			qib_rc_error(qp, IB_WC_LOC_QP_OP_ERR);
+			rvt_rc_error(qp, IB_WC_LOC_QP_OP_ERR);
 			return;
 		}
 		if (!ret) {
@@ -563,7 +567,7 @@ void qib_ud_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
 			     sizeof(struct ib_grh), 1);
 		wc.wc_flags |= IB_WC_GRH;
 	} else
-		qib_skip_sge(&qp->r_sge, sizeof(struct ib_grh), 1);
+		rvt_skip_sge(&qp->r_sge, sizeof(struct ib_grh), true);
 	qib_copy_sge(&qp->r_sge, data, wc.byte_len - sizeof(struct ib_grh), 1);
 	rvt_put_ss(&qp->r_sge);
 	if (!test_and_clear_bit(RVT_R_WRID_VALID, &qp->r_aflags))

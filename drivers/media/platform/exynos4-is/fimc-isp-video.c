@@ -40,7 +40,7 @@
 
 static int isp_video_capture_queue_setup(struct vb2_queue *vq,
 			unsigned int *num_buffers, unsigned int *num_planes,
-			unsigned int sizes[], void *allocators[])
+			unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct fimc_isp *isp = vb2_get_drv_priv(vq);
 	struct v4l2_pix_format_mplane *vid_fmt = &isp->video_capture.pixfmt;
@@ -57,20 +57,16 @@ static int isp_video_capture_queue_setup(struct vb2_queue *vq,
 	if (*num_planes) {
 		if (*num_planes != fmt->memplanes)
 			return -EINVAL;
-		for (i = 0; i < *num_planes; i++) {
+		for (i = 0; i < *num_planes; i++)
 			if (sizes[i] < (wh * fmt->depth[i]) / 8)
 				return -EINVAL;
-			allocators[i] = isp->alloc_ctx;
-		}
 		return 0;
 	}
 
 	*num_planes = fmt->memplanes;
 
-	for (i = 0; i < fmt->memplanes; i++) {
+	for (i = 0; i < fmt->memplanes; i++)
 		sizes[i] = (wh * fmt->depth[i]) / 8;
-		allocators[i] = isp->alloc_ctx;
-	}
 
 	return 0;
 }
@@ -316,7 +312,7 @@ static int isp_video_release(struct file *file)
 	mutex_lock(&isp->video_lock);
 
 	if (v4l2_fh_is_singular_file(file) && ivc->streaming) {
-		media_entity_pipeline_stop(entity);
+		media_pipeline_stop(entity);
 		ivc->streaming = 0;
 	}
 
@@ -493,7 +489,7 @@ static int isp_video_streamon(struct file *file, void *priv,
 	struct media_entity *me = &ve->vdev.entity;
 	int ret;
 
-	ret = media_entity_pipeline_start(me, &ve->pipe->mp);
+	ret = media_pipeline_start(me, &ve->pipe->mp);
 	if (ret < 0)
 		return ret;
 
@@ -508,7 +504,7 @@ static int isp_video_streamon(struct file *file, void *priv,
 	isp->video_capture.streaming = 1;
 	return 0;
 p_stop:
-	media_entity_pipeline_stop(me);
+	media_pipeline_stop(me);
 	return ret;
 }
 
@@ -523,7 +519,7 @@ static int isp_video_streamoff(struct file *file, void *priv,
 	if (ret < 0)
 		return ret;
 
-	media_entity_pipeline_stop(&video->ve.vdev.entity);
+	media_pipeline_stop(&video->ve.vdev.entity);
 	video->streaming = 0;
 	return 0;
 }
@@ -597,6 +593,7 @@ int fimc_isp_video_device_register(struct fimc_isp *isp,
 	q->drv_priv = isp;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->lock = &isp->video_lock;
+	q->dev = &isp->pdev->dev;
 
 	ret = vb2_queue_init(q);
 	if (ret < 0)

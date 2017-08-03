@@ -138,7 +138,7 @@ int btmrvl_process_event(struct btmrvl_private *priv, struct sk_buff *skb)
 			if (event->length > 3 && event->data[3])
 				priv->btmrvl_dev.dev_type = HCI_AMP;
 			else
-				priv->btmrvl_dev.dev_type = HCI_BREDR;
+				priv->btmrvl_dev.dev_type = HCI_PRIMARY;
 
 			BT_DBG("dev_type: %d", priv->btmrvl_dev.dev_type);
 		} else if (priv->btmrvl_dev.sendcmdflag &&
@@ -502,7 +502,7 @@ static int btmrvl_download_cal_data(struct btmrvl_private *priv,
 	ret = btmrvl_send_sync_cmd(priv, BT_CMD_LOAD_CONFIG_DATA, data,
 				   BT_CAL_HDR_LEN + len);
 	if (ret)
-		BT_ERR("Failed to download caibration data");
+		BT_ERR("Failed to download calibration data");
 
 	return 0;
 }

@@ -174,7 +174,7 @@ static void shmob_drm_crtc_start(struct shmob_drm_crtc *scrtc)
 	if (scrtc->started)
 		return;
 
-	format = shmob_drm_format_info(crtc->primary->fb->pixel_format);
+	format = shmob_drm_format_info(crtc->primary->fb->format->format);
 	if (WARN_ON(format == NULL))
 		return;
 
@@ -376,10 +376,10 @@ static int shmob_drm_crtc_mode_set(struct drm_crtc *crtc,
 	const struct shmob_drm_format_info *format;
 	void *cache;
 
-	format = shmob_drm_format_info(crtc->primary->fb->pixel_format);
+	format = shmob_drm_format_info(crtc->primary->fb->format->format);
 	if (format == NULL) {
 		dev_dbg(sdev->dev, "mode_set: unsupported format %08x\n",
-			crtc->primary->fb->pixel_format);
+			crtc->primary->fb->format->format);
 		return -EINVAL;
 	}
 
@@ -441,7 +441,7 @@ void shmob_drm_crtc_finish_page_flip(struct shmob_drm_crtc *scrtc)
 	scrtc->event = NULL;
 	if (event) {
 		drm_crtc_send_vblank_event(&scrtc->crtc, event);
-		drm_vblank_put(dev, 0);
+		drm_crtc_vblank_put(&scrtc->crtc);
 	}
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 }
@@ -467,7 +467,7 @@ static int shmob_drm_crtc_page_flip(struct drm_crtc *crtc,
 
 	if (event) {
 		event->pipe = 0;
-		drm_vblank_get(dev, 0);
+		drm_crtc_vblank_get(&scrtc->crtc);
 		spin_lock_irqsave(&dev->event_lock, flags);
 		scrtc->event = event;
 		spin_unlock_irqrestore(&dev->event_lock, flags);
@@ -669,15 +669,8 @@ static void shmob_drm_connector_destroy(struct drm_connector *connector)
 	drm_connector_cleanup(connector);
 }
 
-static enum drm_connector_status
-shmob_drm_connector_detect(struct drm_connector *connector, bool force)
-{
-	return connector_status_connected;
-}
-
 static const struct drm_connector_funcs connector_funcs = {
 	.dpms = drm_helper_connector_dpms,
-	.detect = shmob_drm_connector_detect,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = shmob_drm_connector_destroy,
 };

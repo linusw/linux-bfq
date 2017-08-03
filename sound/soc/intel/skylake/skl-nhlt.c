@@ -17,6 +17,7 @@
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
  */
+#include <linux/pci.h>
 #include "skl.h"
 
 /* Unique identification for getting NHLT blobs */
@@ -101,14 +102,16 @@ static void dump_config(struct device *dev, u32 instance_id, u8 linktype,
 }
 
 static bool skl_check_ep_match(struct device *dev, struct nhlt_endpoint *epnt,
-				u32 instance_id, u8 link_type, u8 dirn)
+		u32 instance_id, u8 link_type, u8 dirn, u8 dev_type)
 {
-	dev_dbg(dev, "vbus_id=%d link_type=%d dir=%d\n",
-		epnt->virtual_bus_id, epnt->linktype, epnt->direction);
+	dev_dbg(dev, "vbus_id=%d link_type=%d dir=%d dev_type = %d\n",
+			epnt->virtual_bus_id, epnt->linktype,
+			epnt->direction, epnt->device_type);
 
 	if ((epnt->virtual_bus_id == instance_id) &&
 			(epnt->linktype == link_type) &&
-			(epnt->direction == dirn))
+			(epnt->direction == dirn) &&
+			(epnt->device_type == dev_type))
 		return true;
 	else
 		return false;
@@ -116,7 +119,8 @@ static bool skl_check_ep_match(struct device *dev, struct nhlt_endpoint *epnt,
 
 struct nhlt_specific_cfg
 *skl_get_ep_blob(struct skl *skl, u32 instance, u8 link_type,
-			u8 s_fmt, u8 num_ch, u32 s_rate, u8 dirn)
+			u8 s_fmt, u8 num_ch, u32 s_rate,
+			u8 dirn, u8 dev_type)
 {
 	struct nhlt_fmt *fmt;
 	struct nhlt_endpoint *epnt;
@@ -134,7 +138,8 @@ struct nhlt_specific_cfg
 	dev_dbg(dev, "endpoint count =%d\n", nhlt->endpoint_count);
 
 	for (j = 0; j < nhlt->endpoint_count; j++) {
-		if (skl_check_ep_match(dev, epnt, instance, link_type, dirn)) {
+		if (skl_check_ep_match(dev, epnt, instance, link_type,
+						dirn, dev_type)) {
 			fmt = (struct nhlt_fmt *)(epnt->config.caps +
 						 epnt->config.size);
 			sp_config = skl_get_specific_cfg(dev, fmt, num_ch,
@@ -149,9 +154,48 @@ struct nhlt_specific_cfg
 	return NULL;
 }
 
-static void skl_nhlt_trim_space(struct skl *skl)
+int skl_get_dmic_geo(struct skl *skl)
 {
-	char *s = skl->tplg_name;
+	struct nhlt_acpi_table *nhlt = (struct nhlt_acpi_table *)skl->nhlt;
+	struct nhlt_endpoint *epnt;
+	struct nhlt_dmic_array_config *cfg;
+	struct device *dev = &skl->pci->dev;
+	unsigned int dmic_geo = 0;
+	u8 j;
+
+	epnt = (struct nhlt_endpoint *)nhlt->desc;
+
+	for (j = 0; j < nhlt->endpoint_count; j++) {
+		if (epnt->linktype == NHLT_LINK_DMIC) {
+			cfg = (struct nhlt_dmic_array_config  *)
+					(epnt->config.caps);
+			switch (cfg->array_type) {
+			case NHLT_MIC_ARRAY_2CH_SMALL:
+			case NHLT_MIC_ARRAY_2CH_BIG:
+				dmic_geo |= MIC_ARRAY_2CH;
+				break;
+
+			case NHLT_MIC_ARRAY_4CH_1ST_GEOM:
+			case NHLT_MIC_ARRAY_4CH_L_SHAPED:
+			case NHLT_MIC_ARRAY_4CH_2ND_GEOM:
+				dmic_geo |= MIC_ARRAY_4CH;
+				break;
+
+			default:
+				dev_warn(dev, "undefined DMIC array_type 0x%0x\n",
+						cfg->array_type);
+
+			}
+		}
+		epnt = (struct nhlt_endpoint *)((u8 *)epnt + epnt->length);
+	}
+
+	return dmic_geo;
+}
+
+static void skl_nhlt_trim_space(char *trim)
+{
+	char *s = trim;
 	int cnt;
 	int i;
 
@@ -178,7 +222,43 @@ int skl_nhlt_update_topology_bin(struct skl *skl)
 		skl->pci_id, nhlt->header.oem_id, nhlt->header.oem_table_id,
 		nhlt->header.oem_revision, "-tplg.bin");
 
-	skl_nhlt_trim_space(skl);
+	skl_nhlt_trim_space(skl->tplg_name);
 
 	return 0;
+}
+
+static ssize_t skl_nhlt_platform_id_show(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	struct pci_dev *pci = to_pci_dev(dev);
+	struct hdac_ext_bus *ebus = pci_get_drvdata(pci);
+	struct skl *skl = ebus_to_skl(ebus);
+	struct nhlt_acpi_table *nhlt = (struct nhlt_acpi_table *)skl->nhlt;
+	char platform_id[32];
+
+	sprintf(platform_id, "%x-%.6s-%.8s-%d", skl->pci_id,
+			nhlt->header.oem_id, nhlt->header.oem_table_id,
+			nhlt->header.oem_revision);
+
+	skl_nhlt_trim_space(platform_id);
+	return sprintf(buf, "%s\n", platform_id);
+}
+
+static DEVICE_ATTR(platform_id, 0444, skl_nhlt_platform_id_show, NULL);
+
+int skl_nhlt_create_sysfs(struct skl *skl)
+{
+	struct device *dev = &skl->pci->dev;
+
+	if (sysfs_create_file(&dev->kobj, &dev_attr_platform_id.attr))
+		dev_warn(dev, "Error creating sysfs entry\n");
+
+	return 0;
+}
+
+void skl_nhlt_remove_sysfs(struct skl *skl)
+{
+	struct device *dev = &skl->pci->dev;
+
+	sysfs_remove_file(&dev->kobj, &dev_attr_platform_id.attr);
 }

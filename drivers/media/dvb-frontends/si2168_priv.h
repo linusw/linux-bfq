@@ -21,6 +21,7 @@
 #include "dvb_frontend.h"
 #include <linux/firmware.h>
 #include <linux/i2c-mux.h>
+#include <linux/kernel.h>
 
 #define SI2168_A20_FIRMWARE "dvb-demod-si2168-a20-01.fw"
 #define SI2168_A30_FIRMWARE "dvb-demod-si2168-a30-01.fw"
@@ -34,8 +35,14 @@ struct si2168_dev {
 	struct dvb_frontend fe;
 	enum fe_delivery_system delivery_system;
 	enum fe_status fe_status;
+	#define SI2168_CHIP_ID_A20 ('A' << 24 | 68 << 16 | '2' << 8 | '0' << 0)
+	#define SI2168_CHIP_ID_A30 ('A' << 24 | 68 << 16 | '3' << 8 | '0' << 0)
+	#define SI2168_CHIP_ID_B40 ('B' << 24 | 68 << 16 | '4' << 8 | '0' << 0)
+	unsigned int chip_id;
+	unsigned int version;
+	const char *firmware_name;
 	bool active;
-	bool fw_loaded;
+	bool warm;
 	u8 ts_mode;
 	bool ts_clock_inv;
 	bool ts_clock_gapped;

@@ -12,6 +12,7 @@
 #include <linux/perf_event.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/string.h>
@@ -24,7 +25,7 @@
 #include <linux/kdebug.h>
 #include <linux/init.h>
 #include <linux/console.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/hardirq.h>
 #include <linux/kprobes.h>
 #include <linux/uaccess.h>
@@ -311,12 +312,34 @@ static noinline void do_sigbus(struct pt_regs *regs)
 	force_sig_info(SIGBUS, &si, tsk);
 }
 
-static noinline void do_fault_error(struct pt_regs *regs, int fault)
+static noinline int signal_return(struct pt_regs *regs)
+{
+	u16 instruction;
+	int rc;
+
+	rc = __get_user(instruction, (u16 __user *) regs->psw.addr);
+	if (rc)
+		return rc;
+	if (instruction == 0x0a77) {
+		set_pt_regs_flag(regs, PIF_SYSCALL);
+		regs->int_code = 0x00040077;
+		return 0;
+	} else if (instruction == 0x0aad) {
+		set_pt_regs_flag(regs, PIF_SYSCALL);
+		regs->int_code = 0x000400ad;
+		return 0;
+	}
+	return -EACCES;
+}
+
+static noinline void do_fault_error(struct pt_regs *regs, int access, int fault)
 {
 	int si_code;
 
 	switch (fault) {
 	case VM_FAULT_BADACCESS:
+		if (access == VM_EXEC && signal_return(regs) == 0)
+			break;
 	case VM_FAULT_BADMAP:
 		/* Bad memory access. Check if it is kernel or user space. */
 		if (user_mode(regs)) {
@@ -324,7 +347,7 @@ static noinline void do_fault_error(struct pt_regs *regs, int fault)
 			si_code = (fault == VM_FAULT_BADMAP) ?
 				SEGV_MAPERR : SEGV_ACCERR;
 			do_sigsegv(regs, si_code);
-			return;
+			break;
 		}
 	case VM_FAULT_BADCONTEXT:
 	case VM_FAULT_PFAULT:
@@ -418,6 +441,8 @@ static inline int do_exception(struct pt_regs *regs, int access)
 		(struct gmap *) S390_lowcore.gmap : NULL;
 	if (gmap) {
 		current->thread.gmap_addr = address;
+		current->thread.gmap_write_flag = !!(flags & FAULT_FLAG_WRITE);
+		current->thread.gmap_int_code = regs->int_code & 0xffff;
 		address = __gmap_translate(gmap, address);
 		if (address == -EFAULT) {
 			fault = VM_FAULT_BADMAP;
@@ -456,7 +481,7 @@ retry:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(mm, vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags);
 	/* No reason to continue if interrupted by SIGKILL. */
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
 		fault = VM_FAULT_SIGNAL;
@@ -523,7 +548,7 @@ out:
 void do_protection_exception(struct pt_regs *regs)
 {
 	unsigned long trans_exc_code;
-	int fault;
+	int access, fault;
 
 	trans_exc_code = regs->int_parm_long;
 	/*
@@ -542,9 +567,17 @@ void do_protection_exception(struct pt_regs *regs)
 		do_low_address(regs);
 		return;
 	}
-	fault = do_exception(regs, VM_WRITE);
+	if (unlikely(MACHINE_HAS_NX && (trans_exc_code & 0x80))) {
+		regs->int_parm_long = (trans_exc_code & ~PAGE_MASK) |
+					(regs->psw.addr & PAGE_MASK);
+		access = VM_EXEC;
+		fault = VM_FAULT_BADACCESS;
+	} else {
+		access = VM_WRITE;
+		fault = do_exception(regs, access);
+	}
 	if (unlikely(fault))
-		do_fault_error(regs, fault);
+		do_fault_error(regs, access, fault);
 }
 NOKPROBE_SYMBOL(do_protection_exception);
 
@@ -555,7 +588,7 @@ void do_dat_exception(struct pt_regs *regs)
 	access = VM_READ | VM_EXEC | VM_WRITE;
 	fault = do_exception(regs, access);
 	if (unlikely(fault))
-		do_fault_error(regs, fault);
+		do_fault_error(regs, access, fault);
 }
 NOKPROBE_SYMBOL(do_dat_exception);
 
@@ -624,7 +657,7 @@ void pfault_fini(void)
 	diag_stat_inc(DIAG_STAT_X258);
 	asm volatile(
 		"	diag	%0,0,0x258\n"
-		"0:\n"
+		"0:	nopr	%%r7\n"
 		EX_TABLE(0b,0b)
 		: : "a" (&refbk), "m" (refbk) : "cc");
 }
@@ -731,6 +764,7 @@ block:
 			 * return to userspace schedule() to block. */
 			__set_current_state(TASK_UNINTERRUPTIBLE);
 			set_tsk_need_resched(tsk);
+			set_preempt_need_resched();
 		}
 	}
 out:
@@ -738,28 +772,21 @@ out:
 	put_task_struct(tsk);
 }
 
-static int pfault_cpu_notify(struct notifier_block *self, unsigned long action,
-			     void *hcpu)
+static int pfault_cpu_dead(unsigned int cpu)
 {
 	struct thread_struct *thread, *next;
 	struct task_struct *tsk;
 
-	switch (action & ~CPU_TASKS_FROZEN) {
-	case CPU_DEAD:
-		spin_lock_irq(&pfault_lock);
-		list_for_each_entry_safe(thread, next, &pfault_list, list) {
-			thread->pfault_wait = 0;
-			list_del(&thread->list);
-			tsk = container_of(thread, struct task_struct, thread);
-			wake_up_process(tsk);
-			put_task_struct(tsk);
-		}
-		spin_unlock_irq(&pfault_lock);
-		break;
-	default:
-		break;
+	spin_lock_irq(&pfault_lock);
+	list_for_each_entry_safe(thread, next, &pfault_list, list) {
+		thread->pfault_wait = 0;
+		list_del(&thread->list);
+		tsk = container_of(thread, struct task_struct, thread);
+		wake_up_process(tsk);
+		put_task_struct(tsk);
 	}
-	return NOTIFY_OK;
+	spin_unlock_irq(&pfault_lock);
+	return 0;
 }
 
 static int __init pfault_irq_init(void)
@@ -773,7 +800,8 @@ static int __init pfault_irq_init(void)
 	if (rc)
 		goto out_pfault;
 	irq_subclass_register(IRQ_SUBCLASS_SERVICE_SIGNAL);
-	hotcpu_notifier(pfault_cpu_notify, 0);
+	cpuhp_setup_state_nocalls(CPUHP_S390_PFAULT_DEAD, "s390/pfault:dead",
+				  NULL, pfault_cpu_dead);
 	return 0;
 
 out_pfault:

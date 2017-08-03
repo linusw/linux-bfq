@@ -35,7 +35,7 @@
 #include <asm/page.h>
 #include <asm/param.h>
 #include <asm/delay.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/udbg.h>
 #include <asm/syscalls.h>
 #include <asm/smp.h>
@@ -685,7 +685,7 @@ int rtas_set_indicator_fast(int indicator, int index, int new_value)
 	return rc;
 }
 
-void rtas_restart(char *cmd)
+void __noreturn rtas_restart(char *cmd)
 {
 	if (rtas_flash_term_hook)
 		rtas_flash_term_hook(SYS_RESTART);
@@ -704,7 +704,7 @@ void rtas_power_off(void)
 	for (;;);
 }
 
-void rtas_halt(void)
+void __noreturn rtas_halt(void)
 {
 	if (rtas_flash_term_hook)
 		rtas_flash_term_hook(SYS_HALT);
@@ -1070,7 +1070,7 @@ asmlinkage int ppc_rtas(struct rtas_args __user *uargs)
 	nret  = be32_to_cpu(args.nret);
 	token = be32_to_cpu(args.token);
 
-	if (nargs > ARRAY_SIZE(args.args)
+	if (nargs >= ARRAY_SIZE(args.args)
 	    || nret > ARRAY_SIZE(args.args)
 	    || nargs + nret > ARRAY_SIZE(args.args))
 		return -EINVAL;
@@ -1145,36 +1145,34 @@ asmlinkage int ppc_rtas(struct rtas_args __user *uargs)
 void __init rtas_initialize(void)
 {
 	unsigned long rtas_region = RTAS_INSTANTIATE_MAX;
+	u32 base, size, entry;
+	int no_base, no_size, no_entry;
 
 	/* Get RTAS dev node and fill up our "rtas" structure with infos
 	 * about it.
 	 */
 	rtas.dev = of_find_node_by_name(NULL, "rtas");
-	if (rtas.dev) {
-		const __be32 *basep, *entryp, *sizep;
-
-		basep = of_get_property(rtas.dev, "linux,rtas-base", NULL);
-		sizep = of_get_property(rtas.dev, "rtas-size", NULL);
-		if (basep != NULL && sizep != NULL) {
-			rtas.base = __be32_to_cpu(*basep);
-			rtas.size = __be32_to_cpu(*sizep);
-			entryp = of_get_property(rtas.dev,
-					"linux,rtas-entry", NULL);
-			if (entryp == NULL) /* Ugh */
-				rtas.entry = rtas.base;
-			else
-				rtas.entry = __be32_to_cpu(*entryp);
-		} else
-			rtas.dev = NULL;
-	}
 	if (!rtas.dev)
 		return;
+
+	no_base = of_property_read_u32(rtas.dev, "linux,rtas-base", &base);
+	no_size = of_property_read_u32(rtas.dev, "rtas-size", &size);
+	if (no_base || no_size) {
+		of_node_put(rtas.dev);
+		rtas.dev = NULL;
+		return;
+	}
+
+	rtas.base = base;
+	rtas.size = size;
+	no_entry = of_property_read_u32(rtas.dev, "linux,rtas-entry", &entry);
+	rtas.entry = no_entry ? rtas.base : entry;
 
 	/* If RTAS was found, allocate the RMO buffer for it and look for
 	 * the stop-self token if any
 	 */
 #ifdef CONFIG_PPC64
-	if (machine_is(pseries) && firmware_has_feature(FW_FEATURE_LPAR)) {
+	if (firmware_has_feature(FW_FEATURE_LPAR)) {
 		rtas_region = min(ppc64_rma_size, RTAS_INSTANTIATE_MAX);
 		ibm_suspend_me_token = rtas_token("ibm,suspend-me");
 	}

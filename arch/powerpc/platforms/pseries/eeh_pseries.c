@@ -2,7 +2,7 @@
  * The file intends to implement the platform dependent EEH operations on pseries.
  * Actually, the pseries platform is built based on RTAS heavily. That means the
  * pseries platform dependent EEH operations will be built on RTAS calls. The functions
- * are devired from arch/powerpc/platforms/pseries/eeh.c and necessary cleanup has
+ * are derived from arch/powerpc/platforms/pseries/eeh.c and necessary cleanup has
  * been done.
  *
  * Copyright Benjamin Herrenschmidt & Gavin Shan, IBM Corporation 2011.
@@ -270,7 +270,7 @@ static void *pseries_eeh_probe(struct pci_dn *pdn, void *data)
 			eeh_add_flag(EEH_ENABLED);
 			eeh_add_to_parent_pe(edev);
 
-			pr_debug("%s: EEH enabled on %02x:%02x.%01x PHB#%d-PE#%x\n",
+			pr_debug("%s: EEH enabled on %02x:%02x.%01x PHB#%x-PE#%x\n",
 				__func__, pdn->busno, PCI_SLOT(pdn->devfn),
 				PCI_FUNC(pdn->devfn), pe.phb->global_number,
 				pe.addr);
@@ -371,7 +371,7 @@ static int pseries_eeh_get_pe_addr(struct eeh_pe *pe)
 				pe->config_addr, BUID_HI(pe->phb->buid),
 				BUID_LO(pe->phb->buid), 0);
 		if (ret) {
-			pr_warn("%s: Failed to get address for PHB#%d-PE#%x\n",
+			pr_warn("%s: Failed to get address for PHB#%x-PE#%x\n",
 				__func__, pe->phb->global_number, pe->config_addr);
 			return 0;
 		}
@@ -384,7 +384,7 @@ static int pseries_eeh_get_pe_addr(struct eeh_pe *pe)
 				pe->config_addr, BUID_HI(pe->phb->buid),
 				BUID_LO(pe->phb->buid), 0);
 		if (ret) {
-			pr_warn("%s: Failed to get address for PHB#%d-PE#%x\n",
+			pr_warn("%s: Failed to get address for PHB#%x-PE#%x\n",
 				__func__, pe->phb->global_number, pe->config_addr);
 			return 0;
 		}
@@ -653,7 +653,7 @@ static int pseries_eeh_configure_bridge(struct eeh_pe *pe)
 		rtas_busy_delay(ret);
 	}
 
-	pr_warn("%s: Unable to configure bridge PHB#%d-PE#%x (%d)\n",
+	pr_warn("%s: Unable to configure bridge PHB#%x-PE#%x (%d)\n",
 		__func__, pe->phb->global_number, pe->addr, ret);
 	return ret;
 }

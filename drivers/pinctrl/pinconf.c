@@ -200,6 +200,18 @@ int pinconf_apply_setting(struct pinctrl_setting const *setting)
 	return 0;
 }
 
+int pinconf_set_config(struct pinctrl_dev *pctldev, unsigned pin,
+		       unsigned long *configs, size_t nconfigs)
+{
+	const struct pinconf_ops *ops;
+
+	ops = pctldev->desc->confops;
+	if (!ops)
+		return -ENOTSUPP;
+
+	return ops->pin_config_set(pctldev, pin, configs, nconfigs);
+}
+
 #ifdef CONFIG_DEBUG_FS
 
 static void pinconf_show_config(struct seq_file *s, struct pinctrl_dev *pctldev,
@@ -258,8 +270,7 @@ void pinconf_show_setting(struct seq_file *s,
 	case PIN_MAP_TYPE_CONFIGS_PIN:
 		desc = pin_desc_get(setting->pctldev,
 				    setting->data.configs.group_or_pin);
-		seq_printf(s, "pin %s (%d)",
-			   desc->name ? desc->name : "unnamed",
+		seq_printf(s, "pin %s (%d)", desc->name,
 			   setting->data.configs.group_or_pin);
 		break;
 	case PIN_MAP_TYPE_CONFIGS_GROUP:
@@ -311,8 +322,7 @@ static int pinconf_pins_show(struct seq_file *s, void *what)
 		if (desc == NULL)
 			continue;
 
-		seq_printf(s, "pin %d (%s):", pin,
-			   desc->name ? desc->name : "unnamed");
+		seq_printf(s, "pin %d (%s): ", pin, desc->name);
 
 		pinconf_dump_pin(pctldev, s, pin);
 
@@ -349,7 +359,7 @@ static int pinconf_groups_show(struct seq_file *s, void *what)
 	while (selector < ngroups) {
 		const char *gname = pctlops->get_group_name(pctldev, selector);
 
-		seq_printf(s, "%u (%s):", selector, gname);
+		seq_printf(s, "%u (%s): ", selector, gname);
 		pinconf_dump_group(pctldev, s, selector, gname);
 		seq_printf(s, "\n");
 

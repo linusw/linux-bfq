@@ -22,7 +22,6 @@
 #include <linux/list.h>
 #include <linux/bug.h>
 #include <linux/skbuff.h>
-#include <linux/semaphore.h>
 #include <linux/timer.h>
 
 struct ath10k;
@@ -315,8 +314,6 @@ struct ath10k_htc_ep {
 
 	u8 seq_no; /* for debugging */
 	int tx_credits;
-	int tx_credit_size;
-	int tx_credits_per_max_message;
 	bool tx_credit_flow_enabled;
 };
 
@@ -340,7 +337,6 @@ struct ath10k_htc {
 	struct completion ctl_resp;
 
 	int total_transmit_credits;
-	struct ath10k_htc_svc_tx_credits service_tx_alloc[ATH10K_HTC_EP_COUNT];
 	int target_credit_size;
 };
 

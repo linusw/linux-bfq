@@ -148,7 +148,7 @@ static void adf_pf2vf_bh_handler(void *data)
 		INIT_WORK(&stop_data->work, adf_dev_stop_async);
 		queue_work(adf_vf_stop_wq, &stop_data->work);
 		/* To ack, clear the PF2VFINT bit */
-		msg &= ~BIT(0);
+		msg &= ~ADF_PF2VF_INT;
 		ADF_CSR_WR(pmisc_bar_addr, hw_data->get_pf2vf_offset(0), msg);
 		return;
 	}
@@ -168,7 +168,7 @@ static void adf_pf2vf_bh_handler(void *data)
 	}
 
 	/* To ack, clear the PF2VFINT bit */
-	msg &= ~BIT(0);
+	msg &= ~ADF_PF2VF_INT;
 	ADF_CSR_WR(pmisc_bar_addr, hw_data->get_pf2vf_offset(0), msg);
 
 	/* Re-enable PF2VF interrupts */
@@ -321,7 +321,7 @@ EXPORT_SYMBOL_GPL(adf_vf_isr_resource_alloc);
 
 int __init adf_init_vf_wq(void)
 {
-	adf_vf_stop_wq = create_workqueue("adf_vf_stop_wq");
+	adf_vf_stop_wq = alloc_workqueue("adf_vf_stop_wq", WQ_MEM_RECLAIM, 0);
 
 	return !adf_vf_stop_wq ? -EFAULT : 0;
 }

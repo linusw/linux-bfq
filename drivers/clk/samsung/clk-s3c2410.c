@@ -76,7 +76,7 @@ static struct syscore_ops s3c2410_clk_syscore_ops = {
 	.resume = s3c2410_clk_resume,
 };
 
-static void s3c2410_clk_sleep_init(void)
+static void __init s3c2410_clk_sleep_init(void)
 {
 	s3c2410_save = samsung_clk_alloc_reg_dump(s3c2410_clk_regs,
 						ARRAY_SIZE(s3c2410_clk_regs));
@@ -90,7 +90,7 @@ static void s3c2410_clk_sleep_init(void)
 	return;
 }
 #else
-static void s3c2410_clk_sleep_init(void) {}
+static void __init s3c2410_clk_sleep_init(void) {}
 #endif
 
 PNAME(fclk_p) = { "mpll", "div_slow" };
@@ -374,8 +374,6 @@ void __init s3c2410_common_clk_init(struct device_node *np, unsigned long xti_f,
 	}
 
 	ctx = samsung_clk_init(np, reg_base, NR_CLKS);
-	if (!ctx)
-		panic("%s: unable to allocate context.\n", __func__);
 
 	/* Register external clocks only in non-dt cases */
 	if (!np)
